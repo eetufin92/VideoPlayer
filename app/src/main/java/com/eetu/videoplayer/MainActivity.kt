@@ -3,6 +3,7 @@ package com.eetu.videoplayer
 import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
@@ -71,6 +72,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,6 +89,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
@@ -102,10 +109,17 @@ import com.eetu.videoplayer.ui.theme.VideoPlayerTheme
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.log10
 import kotlin.math.pow
+
+private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+private val SEEK_SENSITIVITY = floatPreferencesKey("seek_sensitivity")
+private val GESTURE_SENSITIVITY = floatPreferencesKey("gesture_sensitivity")
 
 class MainActivity : ComponentActivity() {
 
@@ -197,6 +211,13 @@ fun VideoPlayerScreen(
     // Sensitivity Settings
     var seekSensitivity by remember { mutableFloatStateOf(1.0f) }
     var gestureSensitivity by remember { mutableFloatStateOf(1.0f) }
+
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        context.dataStore.data.map { it[SEEK_SENSITIVITY] ?: 1.0f }.first().let { seekSensitivity = it }
+        context.dataStore.data.map { it[GESTURE_SENSITIVITY] ?: 1.0f }.first().let { gestureSensitivity = it }
+    }
 
     // Gesture State
     var seekDragDelta by remember { mutableLongStateOf(0L) }
@@ -585,8 +606,18 @@ fun VideoPlayerScreen(
                         gestureSensitivity = gestureSensitivity,
                         onBrightnessChange = { brightness = it },
                         onContrastChange = { contrast = it },
-                        onSeekSensitivityChange = { seekSensitivity = it },
-                        onGestureSensitivityChange = { gestureSensitivity = it },
+                        onSeekSensitivityChange = { 
+                            seekSensitivity = it
+                            scope.launch {
+                                context.dataStore.edit { settings -> settings[SEEK_SENSITIVITY] = it }
+                            }
+                        },
+                        onGestureSensitivityChange = { 
+                            gestureSensitivity = it
+                            scope.launch {
+                                context.dataStore.edit { settings -> settings[GESTURE_SENSITIVITY] = it }
+                            }
+                        },
                         onDismiss = { showAdjustments = false }
                     )
                 }
