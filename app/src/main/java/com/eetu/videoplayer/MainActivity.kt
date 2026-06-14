@@ -300,6 +300,7 @@ fun VideoPlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .background(Color.Black)
                 .pointerInput(playerController, duration) {
                     if (isInPiPMode) return@pointerInput
                     
@@ -392,12 +393,12 @@ fun VideoPlayerScreen(
                                 val pan = event.calculatePan()
 
                                 if (zoom != 1f || pan != Offset.Zero) {
-                                    scale = (scale * zoom).coerceIn(1f, 5f)
-                                    val maxX = (size.width * (scale - 1)) / 2
-                                    val maxY = (size.height * (scale - 1)) / 2
+                                    scale = (scale * zoom).coerceIn(0.1f, 10f)
+                                    val maxOffsetH = (size.width * scale + size.width) / 2
+                                    val maxOffsetV = (size.height * scale + size.height) / 2
                                     offset = Offset(
-                                        (offset.x + pan.x).coerceIn(-maxX, maxX),
-                                        (offset.y + pan.y).coerceIn(-maxY, maxY)
+                                        (offset.x + pan.x).coerceIn(-maxOffsetH, maxOffsetH),
+                                        (offset.y + pan.y).coerceIn(-maxOffsetV, maxOffsetV)
                                     )
                                     changes.forEach { it.consume() }
                                     lastPinchEndTime = System.currentTimeMillis()
