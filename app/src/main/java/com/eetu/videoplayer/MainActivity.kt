@@ -46,6 +46,9 @@ import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
@@ -482,8 +485,24 @@ fun VideoPlayerScreen(
                             }
                         },
                         onSeek = { position ->
-                            playerController?.seekTo(position)
-                            currentPosition = position
+                            playerController?.let {
+                                it.seekTo(position)
+                                currentPosition = position
+                            }
+                        },
+                        onRewind = {
+                            playerController?.let {
+                                val newPos = (it.currentPosition - 10000).coerceAtLeast(0)
+                                it.seekTo(newPos)
+                                currentPosition = newPos
+                            }
+                        },
+                        onForward = {
+                            playerController?.let {
+                                val newPos = (it.currentPosition + 10000).coerceAtMost(duration)
+                                it.seekTo(newPos)
+                                currentPosition = newPos
+                            }
                         },
                         onSpeedClick = { showSpeedDialog = true },
                         onAdjustmentsClick = { showAdjustments = true },
@@ -770,29 +789,46 @@ fun PlayerControls(
     isMuted: Boolean,
     onPlayPauseToggle: () -> Unit,
     onSeek: (Long) -> Unit,
+    onRewind: () -> Unit,
+    onForward: () -> Unit,
     onSpeedClick: () -> Unit,
     onAdjustmentsClick: () -> Unit,
     onMuteToggle: () -> Unit,
     onTrackSelectionClick: () -> Unit
 ) {
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.4f))
+        modifier = Modifier.fillMaxSize()
     ) {
-        // Center Play/Pause
-        IconButton(
-            onClick = onPlayPauseToggle,
+        // Top Left: Speed Button
+        Box(
             modifier = Modifier
-                .align(Alignment.Center)
-                .size(80.dp)
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.8f), CircleShape)
+                .align(Alignment.TopStart)
+                .padding(16.dp)
         ) {
-            Icon(
-                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = null,
-                modifier = Modifier.size(48.dp),
-                tint = MaterialTheme.colorScheme.onPrimary
+            ControlIcon(
+                icon = Icons.Default.Speed,
+                label = String.format(Locale.US, "%.1fx", playbackSpeed),
+                onClick = onSpeedClick
+            )
+        }
+
+        // Top Right: Settings/Adjustments and Tracks
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ControlIcon(
+                icon = Icons.Default.Subtitles,
+                label = "",
+                onClick = onTrackSelectionClick
+            )
+            Spacer(modifier = Modifier.width(20.dp))
+            ControlIcon(
+                icon = Icons.Default.Settings,
+                label = "",
+                onClick = onAdjustmentsClick
             )
         }
 
@@ -801,63 +837,75 @@ fun PlayerControls(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(16.dp)
+                .padding(bottom = 32.dp, start = 16.dp, end = 16.dp)
         ) {
+            // Progress Bar Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = formatTime(currentPosition),
                     color = Color.White,
-                    fontSize = 14.sp
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
                 )
                 
                 CustomSlider(
                     value = currentPosition.toFloat(),
                     onValueChange = { onSeek(it.toLong()) },
                     valueRange = 0f..duration.coerceAtLeast(0).toFloat(),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    modifier = Modifier.weight(1f).height(16.dp).padding(horizontal = 8.dp)
                 )
 
                 Text(
                     text = formatTime(duration),
                     color = Color.White,
-                    fontSize = 14.sp
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
                 )
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                ControlIcon(
-                    icon = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                    label = if (isMuted) "Unmute" else "Mute",
-                    onClick = onMuteToggle
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                ControlIcon(
-                    icon = Icons.Default.Subtitles,
-                    label = "Tracks",
-                    onClick = onTrackSelectionClick
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                ControlIcon(
-                    icon = Icons.Default.BrightnessLow,
-                    label = "Adjust",
-                    onClick = onAdjustmentsClick
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                ControlIcon(
-                    icon = Icons.Default.Speed,
-                    label = String.format(Locale.US, "%.2fx", playbackSpeed),
-                    onClick = onSpeedClick
-                )
+            // Centered Playback Controls
+            Box(modifier = Modifier.fillMaxWidth()) {
+                // Mute toggle on the left
+                Box(modifier = Modifier.align(Alignment.CenterStart)) {
+                    IconButton(onClick = onMuteToggle) {
+                        Icon(
+                            imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+
+                // Centered Group
+                Row(
+                    modifier = Modifier.align(Alignment.Center),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(24.dp)
+                ) {
+                    IconButton(onClick = onRewind) {
+                        Icon(Icons.Default.Replay10, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                    }
+                    IconButton(
+                        onClick = onPlayPauseToggle,
+                        modifier = Modifier.size(64.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(56.dp),
+                            tint = Color.White
+                        )
+                    }
+                    IconButton(onClick = onForward) {
+                        Icon(Icons.Default.Forward10, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                    }
+                }
             }
         }
     }
