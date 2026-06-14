@@ -301,8 +301,8 @@ fun VideoPlayerScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .background(Color.Black)
-                .pointerInput(playerController, duration) {
-                    if (isInPiPMode) return@pointerInput
+                .pointerInput(playerController, duration, showSpeedDialog, showAdjustments, showTrackSelection) {
+                    if (isInPiPMode || showSpeedDialog || showAdjustments || showTrackSelection) return@pointerInput
                     
                     awaitEachGesture {
                         val firstDown = awaitFirstDown(requireUnconsumed = false)
@@ -974,19 +974,21 @@ fun AdjustmentsOverlay(
     Surface(
         modifier = Modifier
             .fillMaxWidth(0.9f)
-            .padding(16.dp),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-        tonalElevation = 8.dp
+            .padding(16.dp)
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { },
+        shape = MaterialTheme.shapes.extraLarge,
+        color = Color.Black.copy(alpha = 0.95f),
+        tonalElevation = 12.dp
     ) {
         Column(modifier = Modifier.padding(24.dp)) {
             Text(
                 text = "Video Adjustments",
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary
+                color = Color.White,
+                fontWeight = FontWeight.ExtraBold
             )
             
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(24.dp))
             
             AdjustmentSlider(
                 label = "Brightness",
@@ -994,7 +996,7 @@ fun AdjustmentsOverlay(
                 onValueChange = onBrightnessChange
             )
             
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(24.dp))
             
             AdjustmentSlider(
                 label = "Contrast",
@@ -1002,14 +1004,17 @@ fun AdjustmentsOverlay(
                 onValueChange = onContrastChange
             )
             
+            Spacer(modifier = Modifier.height(8.dp))
+            
             Text(
-                text = "Done",
+                text = "DONE",
                 modifier = Modifier
                     .align(Alignment.End)
-                    .padding(top = 16.dp)
+                    .padding(8.dp)
                     .clickable { onDismiss() },
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold
+                color = Color.White,
+                fontWeight = FontWeight.Black,
+                fontSize = 16.sp
             )
         }
     }
@@ -1020,18 +1025,32 @@ fun AdjustmentSlider(label: String, value: Float, onValueChange: (Float) -> Unit
     Column {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = label, style = MaterialTheme.typography.bodySmall)
-            Text(text = String.format(Locale.US, "%.2f", value), style = MaterialTheme.typography.bodySmall)
+            Text(
+                text = label.uppercase(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
+            Text(
+                text = String.format(Locale.US, "%.2f", value),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
         }
+        Spacer(modifier = Modifier.height(4.dp))
         Slider(
             value = value,
             onValueChange = onValueChange,
             valueRange = -1f..1f,
             colors = SliderDefaults.colors(
-                thumbColor = MaterialTheme.colorScheme.secondary,
-                activeTrackColor = MaterialTheme.colorScheme.secondary
+                thumbColor = Color.White,
+                activeTrackColor = Color.White,
+                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
             )
         )
     }

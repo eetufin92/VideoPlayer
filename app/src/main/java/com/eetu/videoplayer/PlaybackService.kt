@@ -7,6 +7,7 @@ import androidx.media3.common.Effect
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Brightness
 import androidx.media3.effect.Contrast
+import androidx.media3.common.util.Log
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -42,6 +43,18 @@ class PlaybackService : MediaSessionService() {
     }
 
     private inner class MediaSessionCallback : MediaSession.Callback {
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): MediaSession.ConnectionResult {
+            val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                .add(SessionCommand(ACTION_SET_VIDEO_EFFECTS, Bundle.EMPTY))
+                .build()
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(sessionCommands)
+                .build()
+        }
+
         override fun onCustomCommand(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
@@ -52,11 +65,17 @@ class PlaybackService : MediaSessionService() {
                 val brightness = args.getFloat(KEY_BRIGHTNESS, 0f)
                 val contrast = args.getFloat(KEY_CONTRAST, 0f)
                 
-                val effects = mutableListOf<Effect>()
-                if (brightness != 0f) effects.add(Brightness(brightness))
-                if (contrast != 0f) effects.add(Contrast(contrast))
+                Log.d("PlaybackService", "Applying effects: brightness=$brightness, contrast=$contrast")
                 
-                (session.player as? ExoPlayer)?.setVideoEffects(effects)
+                val effects = mutableListOf<Effect>()
+                effects.add(Brightness(brightness))
+                effects.add(Contrast(contrast))
+                
+                val player = session.player
+                if (player is ExoPlayer) {
+                    player.setVideoEffects(effects)
+                }
+
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
             return super.onCustomCommand(session, controller, customCommand, args)
