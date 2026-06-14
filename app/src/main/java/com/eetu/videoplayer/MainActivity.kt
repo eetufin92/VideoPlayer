@@ -509,10 +509,12 @@ fun VideoPlayerScreen(
 
                 // Overlays
                 if (isSeeking) {
-                    SeekOverlay(
-                        currentPos = currentPosition,
-                        delta = seekDragDelta
-                    )
+                    Box(modifier = Modifier.fillMaxSize().padding(top = 32.dp), contentAlignment = Alignment.TopCenter) {
+                        SeekOverlay(
+                            currentPos = currentPosition,
+                            delta = seekDragDelta
+                        )
+                    }
                 }
 
                 if (isBrightnessDragging) {
@@ -689,21 +691,25 @@ fun VideoPlayerScreen(
 fun SeekOverlay(currentPos: Long, delta: Long) {
     Box(
         modifier = Modifier
-            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
-            .padding(16.dp),
+            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = formatTime(currentPos),
-                color = Color.White,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = if (delta >= 0) Icons.Default.Forward10 else Icons.Default.Replay10,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(16.dp)
             )
+            Spacer(modifier = Modifier.width(6.dp))
+            val deltaText = if (delta >= 0) "+${formatTime(delta)}" else "-${formatTime(-delta)}"
             Text(
-                text = if (delta >= 0) "[+${formatTime(delta)}]" else "[-${formatTime(-delta)}]",
-                color = if (delta >= 0) Color.Green else Color.Red,
-                fontSize = 16.sp
+                text = "${formatTime(currentPos)} [$deltaText]",
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
             )
         }
     }
