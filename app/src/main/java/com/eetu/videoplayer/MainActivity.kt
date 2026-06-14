@@ -809,12 +809,19 @@ fun PlayerControls(
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
-        // Top Left: Speed Button
-        Box(
+        // Top Left: Mute and Speed Buttons
+        Row(
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(16.dp)
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            ControlIcon(
+                icon = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                label = "",
+                onClick = onMuteToggle
+            )
+            Spacer(modifier = Modifier.width(20.dp))
             ControlIcon(
                 icon = Icons.Default.Speed,
                 label = String.format(Locale.US, "%.1fx", playbackSpeed),
@@ -880,18 +887,6 @@ fun PlayerControls(
 
             // Centered Playback Controls
             Box(modifier = Modifier.fillMaxWidth()) {
-                // Mute toggle on the left
-                Box(modifier = Modifier.align(Alignment.CenterStart)) {
-                    IconButton(onClick = onMuteToggle) {
-                        Icon(
-                            imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-                }
-
                 // Centered Group
                 Row(
                     modifier = Modifier.align(Alignment.Center),
