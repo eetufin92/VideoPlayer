@@ -37,8 +37,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.BrightnessLow
@@ -102,6 +104,8 @@ import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.delay
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.math.log10
+import kotlin.math.pow
 
 class MainActivity : ComponentActivity() {
 
@@ -189,6 +193,10 @@ fun VideoPlayerScreen(
     var showSpeedDialog by remember { mutableStateOf(false) }
     var showAdjustments by remember { mutableStateOf(false) }
     var showTrackSelection by remember { mutableStateOf(false) }
+
+    // Sensitivity Settings
+    var seekSensitivity by remember { mutableFloatStateOf(1.0f) }
+    var gestureSensitivity by remember { mutableFloatStateOf(1.0f) }
 
     // Gesture State
     var seekDragDelta by remember { mutableLongStateOf(0L) }
@@ -354,13 +362,9 @@ fun VideoPlayerScreen(
                                     }
 
                                     if (isSeeking) {
-                                        val velocityX = if (timeElapsed > 0) kotlin.math.abs(dragAmount.x) / timeElapsed else 0f
-                                        // Granularity: even higher. 
-                                        // User wants "slow long swipe like 5sec".
-                                        // Base sensitivity: 5s per screen width.
-                                        val velocityFactor = (1f + (velocityX / 1f)).coerceAtMost(20f)
-                                        val baseSensitivity = 5000f / size.width
-                                        seekDragDelta = (dragAmount.x * baseSensitivity * velocityFactor).toLong()
+                                        // Reasonable default: 30 seconds per screen width
+                                        val baseSensitivity = 30000f / size.width
+                                        seekDragDelta = (dragAmount.x * baseSensitivity * seekSensitivity).toLong()
                                         val newPos = (initialSeekPosition + seekDragDelta).coerceIn(0L, duration)
                                         
                                         // Throttle seek updates to once per 1000ms
@@ -372,9 +376,8 @@ fun VideoPlayerScreen(
                                         currentPosition = newPos
                                         change.consume()
                                     } else if (isBrightnessDragging) {
-                                        // User wants "50% vertical screen is the range for 1 to 100"
-                                        // sensitivity = 1.0 / (0.5 * size.height)
-                                        val delta = -dragAmount.y / (size.height * 0.5f)
+                                        // Reasonable default: 100% screen height = 100% brightness change
+                                        val delta = (-dragAmount.y / size.height) * gestureSensitivity
                                         screenBrightness = (screenBrightness.takeIf { it >= 0 } ?: 0.5f) + delta
                                         screenBrightness = screenBrightness.coerceIn(0.01f, 1f)
                                         change.consume()
@@ -578,8 +581,12 @@ fun VideoPlayerScreen(
                     AdjustmentsOverlay(
                         brightness = brightness,
                         contrast = contrast,
+                        seekSensitivity = seekSensitivity,
+                        gestureSensitivity = gestureSensitivity,
                         onBrightnessChange = { brightness = it },
                         onContrastChange = { contrast = it },
+                        onSeekSensitivityChange = { seekSensitivity = it },
+                        onGestureSensitivityChange = { gestureSensitivity = it },
                         onDismiss = { showAdjustments = false }
                     )
                 }
@@ -1018,8 +1025,12 @@ fun SpeedDialog(
 fun AdjustmentsOverlay(
     brightness: Float,
     contrast: Float,
+    seekSensitivity: Float,
+    gestureSensitivity: Float,
     onBrightnessChange: (Float) -> Unit,
     onContrastChange: (Float) -> Unit,
+    onSeekSensitivityChange: (Float) -> Unit,
+    onGestureSensitivityChange: (Float) -> Unit,
     onDismiss: () -> Unit
 ) {
     Surface(
@@ -1031,7 +1042,11 @@ fun AdjustmentsOverlay(
         color = Color.Black.copy(alpha = 0.95f),
         tonalElevation = 12.dp
     ) {
-        Column(modifier = Modifier.padding(24.dp)) {
+        Column(
+            modifier = Modifier
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
             Text(
                 text = "Video Adjustments",
                 style = MaterialTheme.typography.titleMedium,
@@ -1044,6 +1059,7 @@ fun AdjustmentsOverlay(
             AdjustmentSlider(
                 label = "Brightness",
                 value = brightness,
+                range = -1f..1f,
                 onValueChange = onBrightnessChange
             )
             
@@ -1052,10 +1068,40 @@ fun AdjustmentsOverlay(
             AdjustmentSlider(
                 label = "Contrast",
                 value = contrast,
+                range = -1f..1f,
                 onValueChange = onContrastChange
             )
+
+            Spacer(modifier = Modifier.height(32.dp))
+            HorizontalDivider(color = Color.White.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "Sensitivity Settings",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                fontWeight = FontWeight.ExtraBold
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            AdjustmentSlider(
+                label = "Seek Sensitivity",
+                value = seekSensitivity,
+                range = 0.01f..100f,
+                onValueChange = onSeekSensitivityChange
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            AdjustmentSlider(
+                label = "Brightness Gesture",
+                value = gestureSensitivity,
+                range = 0.01f..100f,
+                onValueChange = onGestureSensitivityChange
+            )
             
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(16.dp))
             
             Text(
                 text = "DONE",
@@ -1072,7 +1118,24 @@ fun AdjustmentsOverlay(
 }
 
 @Composable
-fun AdjustmentSlider(label: String, value: Float, onValueChange: (Float) -> Unit) {
+fun AdjustmentSlider(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float> = -1f..1f,
+    onValueChange: (Float) -> Unit
+) {
+    // Clever mapping for sensitivity ranges (e.g., 0.01 to 100)
+    // If the range spans multiple orders of magnitude, use a logarithmic scale 
+    // so that 1.0 is in the center.
+    val useLogScale = range.start > 0 && (range.endInclusive / range.start) >= 100f
+    
+    val sliderValue = if (useLogScale) log10(value) else value
+    val sliderRange = if (useLogScale) {
+        log10(range.start)..log10(range.endInclusive)
+    } else {
+        range
+    }
+
     Column {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1095,9 +1158,12 @@ fun AdjustmentSlider(label: String, value: Float, onValueChange: (Float) -> Unit
         }
         Spacer(modifier = Modifier.height(4.dp))
         Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = -1f..1f,
+            value = sliderValue,
+            onValueChange = { 
+                val newValue = if (useLogScale) 10f.pow(it) else it
+                onValueChange(newValue) 
+            },
+            valueRange = sliderRange,
             colors = SliderDefaults.colors(
                 thumbColor = Color.White,
                 activeTrackColor = Color.White,
