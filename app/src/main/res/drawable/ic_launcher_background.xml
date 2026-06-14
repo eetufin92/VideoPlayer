@@ -4,7 +4,19 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Deep charcoal base -->
     <path
-        android:fillColor="#AA00FF"
+        android:fillColor="#121212"
         android:pathData="M0,0h108v108h-108z" />
+    <!-- Subtle tech-grid pattern in the background -->
+    <path
+        android:fillColor="#1F1F1F"
+        android:pathData="M10,0h1v108h-1z M20,0h1v108h-1z M30,0h1v108h-1z M40,0h1v108h-1z M50,0h1v108h-1z M60,0h1v108h-1z M70,0h1v108h-1z M80,0h1v108h-1z M90,0h1v108h-1z M100,0h1v108h-1z" />
+    <path
+        android:fillColor="#1F1F1F"
+        android:pathData="M0,10v1h108v-1z M0,20v1h108v-1z M0,30v1h108v-1z M0,40v1h108v-1z M0,50v1h108v-1z M0,60v1h108v-1z M0,70v1h108v-1z M0,80v1h108v-1z M0,90v1h108v-1z M0,100v1h108v-1z" />
+    <!-- Subtle atmospheric glow from top-left -->
+    <path
+        android:fillColor="#2A2A2A"
+        android:pathData="M0,0 L108,0 L0,108 Z" />
 </vector>

@@ -4,13 +4,32 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Modern energetic play button symbol in Vibrant Gold -->
+
+    <!-- Outer lens ring -->
     <path
-        android:fillColor="#FFD600"
-        android:pathData="M42,35 L42,73 C42,74.5 43.5,75.5 45,74.5 L73,55.5 C74.2,54.7 74.2,53.3 73,52.5 L45,33.5 C43.5,32.5 42,33.5 42,35 Z" />
-    <!-- Adding a subtle inner detail for energy -->
+        android:fillColor="#333333"
+        android:pathData="M54,20 C35.2,20 20,35.2 20,54 C20,72.8 35.2,88 54,88 C72.8,88 88,72.8 88,54 C88,35.2 72.8,20 54,20 M54,83 C38,83 25,70 25,54 C25,38 38,25 54,25 C70,25 83,38 83,54 C83,70 70,83 54,83 Z" />
+
+    <!-- Subtle Cyan rim light for the lens -->
+    <path
+        android:fillColor="#00E5FF"
+        android:fillAlpha="0.4"
+        android:pathData="M54,25 C38,25 25,38 25,54 C25,54.5 25.1,55 25.1,55.5 C25.5,40 38.2,27.5 54,27.5 C69.8,27.5 82.5,40 82.9,55.5 C82.9,55 83,54.5 83,54 C83,38 70,25 54,25 Z" />
+
+    <!-- Main triangular play button - Electric Cyan -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M44,38 L44,70 C44,71.2 45.3,72 46.4,71.3 L71.4,55.3 C72.4,54.6 72.4,53.4 71.4,52.7 L46.4,36.7 C45.3,36 44,36.8 44,38 Z" />
+
+    <!-- Prism shading for the play button -->
+    <path
+        android:fillColor="#00B8D4"
+        android:pathData="M46,42 L46,66 L65,54 Z" />
+
+    <!-- Top-edge highlight -->
     <path
         android:fillColor="#FFFFFF"
         android:fillAlpha="0.3"
-        android:pathData="M45,38 L45,70 L68,54 Z" />
+        android:pathData="M44,38 L44,40 L69,54 L44,38 Z" />
+
 </vector>
