@@ -63,7 +63,10 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -93,6 +96,8 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -120,6 +125,9 @@ import kotlin.math.pow
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 private val SEEK_SENSITIVITY = floatPreferencesKey("seek_sensitivity")
 private val GESTURE_SENSITIVITY = floatPreferencesKey("gesture_sensitivity")
+private val AUTO_LOAD_SUBTITLES = booleanPreferencesKey("auto_load_subtitles")
+private val PREFERRED_AUDIO_LANG = stringPreferencesKey("preferred_audio_lang")
+private val PREFERRED_SUBTITLE_LANG = stringPreferencesKey("preferred_subtitle_lang")
 
 class MainActivity : ComponentActivity() {
 
@@ -186,6 +194,7 @@ fun VideoPlayerScreen(
     onIsPlayingChanged: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
+    var playerController by remember { mutableStateOf<MediaController?>(null) }
     
     // Player State
     var isPlaying by remember { mutableStateOf(false) }
@@ -207,16 +216,39 @@ fun VideoPlayerScreen(
     var showSpeedDialog by remember { mutableStateOf(false) }
     var showAdjustments by remember { mutableStateOf(false) }
     var showTrackSelection by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     // Sensitivity Settings
     var seekSensitivity by remember { mutableFloatStateOf(1.0f) }
     var gestureSensitivity by remember { mutableFloatStateOf(1.0f) }
+    var autoLoadSubtitles by remember { mutableStateOf(true) }
+    var prefAudioLang by remember { mutableStateOf("") }
+    var prefSubLang by remember { mutableStateOf("") }
 
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         context.dataStore.data.map { it[SEEK_SENSITIVITY] ?: 1.0f }.first().let { seekSensitivity = it }
         context.dataStore.data.map { it[GESTURE_SENSITIVITY] ?: 1.0f }.first().let { gestureSensitivity = it }
+        context.dataStore.data.map { it[AUTO_LOAD_SUBTITLES] ?: true }.first().let { autoLoadSubtitles = it }
+        context.dataStore.data.map { it[PREFERRED_AUDIO_LANG] ?: "" }.first().let { prefAudioLang = it }
+        context.dataStore.data.map { it[PREFERRED_SUBTITLE_LANG] ?: "" }.first().let { prefSubLang = it }
+    }
+
+    // Apply preferred languages when they change or player is ready
+    LaunchedEffect(prefAudioLang, prefSubLang, autoLoadSubtitles, playerController) {
+        playerController?.let { controller ->
+            val parameters = controller.trackSelectionParameters
+                .buildUpon()
+                .setPreferredAudioLanguage(prefAudioLang.takeIf { it.isNotBlank() })
+                .setPreferredTextLanguage(prefSubLang.takeIf { it.isNotBlank() })
+                // If autoLoadSubtitles is false, we might want to disable text tracks by default
+                // but usually preferredTextLanguage handle selection. 
+                // To strictly disable if false:
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !autoLoadSubtitles)
+                .build()
+            controller.trackSelectionParameters = parameters
+        }
     }
 
     // Gesture State
@@ -228,8 +260,6 @@ fun VideoPlayerScreen(
     var isBrightnessDragging by remember { mutableStateOf(false) }
     var isHoldingSpeedBoost by remember { mutableStateOf(false) }
     var lastPinchEndTime by remember { mutableLongStateOf(0L) }
-
-    var playerController by remember { mutableStateOf<MediaController?>(null) }
 
     val activity = context as? Activity
     LaunchedEffect(screenBrightness) {
@@ -336,8 +366,8 @@ fun VideoPlayerScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .background(Color.Black)
-                .pointerInput(playerController, duration, showSpeedDialog, showAdjustments, showTrackSelection) {
-                    if (isInPiPMode || showSpeedDialog || showAdjustments || showTrackSelection) return@pointerInput
+                .pointerInput(playerController, duration, showSpeedDialog, showAdjustments, showTrackSelection, showSettings) {
+                    if (isInPiPMode || showSpeedDialog || showAdjustments || showTrackSelection || showSettings) return@pointerInput
                     
                     awaitEachGesture {
                         val firstDown = awaitFirstDown(requireUnconsumed = false)
@@ -602,23 +632,44 @@ fun VideoPlayerScreen(
                     AdjustmentsOverlay(
                         brightness = brightness,
                         contrast = contrast,
-                        seekSensitivity = seekSensitivity,
-                        gestureSensitivity = gestureSensitivity,
                         onBrightnessChange = { brightness = it },
                         onContrastChange = { contrast = it },
+                        onSettingsClick = { 
+                            showAdjustments = false
+                            showSettings = true 
+                        },
+                        onDismiss = { showAdjustments = false }
+                    )
+                }
+
+                if (showSettings && !isInPiPMode) {
+                    SettingsDialog(
+                        seekSensitivity = seekSensitivity,
+                        gestureSensitivity = gestureSensitivity,
+                        autoLoadSubtitles = autoLoadSubtitles,
+                        prefAudioLang = prefAudioLang,
+                        prefSubLang = prefSubLang,
                         onSeekSensitivityChange = { 
                             seekSensitivity = it
-                            scope.launch {
-                                context.dataStore.edit { settings -> settings[SEEK_SENSITIVITY] = it }
-                            }
+                            scope.launch { context.dataStore.edit { settings -> settings[SEEK_SENSITIVITY] = it } }
                         },
                         onGestureSensitivityChange = { 
                             gestureSensitivity = it
-                            scope.launch {
-                                context.dataStore.edit { settings -> settings[GESTURE_SENSITIVITY] = it }
-                            }
+                            scope.launch { context.dataStore.edit { settings -> settings[GESTURE_SENSITIVITY] = it } }
                         },
-                        onDismiss = { showAdjustments = false }
+                        onAutoLoadSubtitlesChange = { 
+                            autoLoadSubtitles = it
+                            scope.launch { context.dataStore.edit { settings -> settings[AUTO_LOAD_SUBTITLES] = it } }
+                        },
+                        onPrefAudioLangChange = { 
+                            prefAudioLang = it
+                            scope.launch { context.dataStore.edit { settings -> settings[PREFERRED_AUDIO_LANG] = it } }
+                        },
+                        onPrefSubLangChange = { 
+                            prefSubLang = it
+                            scope.launch { context.dataStore.edit { settings -> settings[PREFERRED_SUBTITLE_LANG] = it } }
+                        },
+                        onDismiss = { showSettings = false }
                     )
                 }
 
@@ -1051,12 +1102,9 @@ fun SpeedDialog(
 fun AdjustmentsOverlay(
     brightness: Float,
     contrast: Float,
-    seekSensitivity: Float,
-    gestureSensitivity: Float,
     onBrightnessChange: (Float) -> Unit,
     onContrastChange: (Float) -> Unit,
-    onSeekSensitivityChange: (Float) -> Unit,
-    onGestureSensitivityChange: (Float) -> Unit,
+    onSettingsClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
     Surface(
@@ -1073,12 +1121,21 @@ fun AdjustmentsOverlay(
                 .padding(24.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            Text(
-                text = "Video Adjustments",
-                style = MaterialTheme.typography.titleMedium,
-                color = Color.White,
-                fontWeight = FontWeight.ExtraBold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Video Adjustments",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                IconButton(onClick = onSettingsClick) {
+                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
+                }
+            }
             
             Spacer(modifier = Modifier.height(24.dp))
             
@@ -1097,20 +1154,63 @@ fun AdjustmentsOverlay(
                 range = -1f..1f,
                 onValueChange = onContrastChange
             )
-
+            
             Spacer(modifier = Modifier.height(32.dp))
-            HorizontalDivider(color = Color.White.copy(alpha = 0.2f))
-            Spacer(modifier = Modifier.height(16.dp))
-
+            
             Text(
-                text = "Sensitivity Settings",
+                text = "DONE",
+                modifier = Modifier
+                    .align(Alignment.End)
+                    .padding(8.dp)
+                    .clickable { onDismiss() },
+                color = Color.White,
+                fontWeight = FontWeight.Black,
+                fontSize = 16.sp
+            )
+        }
+    }
+}
+
+@Composable
+fun SettingsDialog(
+    seekSensitivity: Float,
+    gestureSensitivity: Float,
+    autoLoadSubtitles: Boolean,
+    prefAudioLang: String,
+    prefSubLang: String,
+    onSeekSensitivityChange: (Float) -> Unit,
+    onGestureSensitivityChange: (Float) -> Unit,
+    onAutoLoadSubtitlesChange: (Boolean) -> Unit,
+    onPrefAudioLangChange: (String) -> Unit,
+    onPrefSubLangChange: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth(0.9f)
+            .height(500.dp)
+            .padding(16.dp),
+        shape = MaterialTheme.shapes.extraLarge,
+        color = Color.Black.copy(alpha = 0.95f),
+        tonalElevation = 12.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Text(
+                text = "Global Settings",
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White,
                 fontWeight = FontWeight.ExtraBold
             )
-
+            
             Spacer(modifier = Modifier.height(24.dp))
 
+            Text("GESTURES", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+            Spacer(modifier = Modifier.height(8.dp))
+            
             AdjustmentSlider(
                 label = "Seek Sensitivity",
                 value = seekSensitivity,
@@ -1126,11 +1226,46 @@ fun AdjustmentsOverlay(
                 range = 0.01f..100f,
                 onValueChange = onGestureSensitivityChange
             )
-            
+
+            Spacer(modifier = Modifier.height(32.dp))
+            HorizontalDivider(color = Color.White.copy(alpha = 0.2f))
             Spacer(modifier = Modifier.height(16.dp))
+
+            Text("TRACK PREFERENCES", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Auto-load Subtitles", color = Color.White)
+                Switch(
+                    checked = autoLoadSubtitles,
+                    onCheckedChange = onAutoLoadSubtitlesChange
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            LanguageField(
+                label = "Preferred Audio Language (ISO-639)",
+                value = prefAudioLang,
+                onValueChange = onPrefAudioLangChange
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            LanguageField(
+                label = "Preferred Subtitle Language",
+                value = prefSubLang,
+                onValueChange = onPrefSubLangChange
+            )
+            
+            Spacer(modifier = Modifier.height(32.dp))
             
             Text(
-                text = "DONE",
+                text = "CLOSE",
                 modifier = Modifier
                     .align(Alignment.End)
                     .padding(8.dp)
@@ -1140,6 +1275,27 @@ fun AdjustmentsOverlay(
                 fontSize = 16.sp
             )
         }
+    }
+}
+
+@Composable
+fun LanguageField(label: String, value: String, onValueChange: (String) -> Unit) {
+    Column {
+        Text(text = label, style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+        Spacer(modifier = Modifier.height(4.dp))
+        TextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("e.g. eng, fin", color = Color.DarkGray) },
+            singleLine = true,
+            colors = TextFieldDefaults.colors(
+                unfocusedContainerColor = Color.White.copy(alpha = 0.1f),
+                focusedContainerColor = Color.White.copy(alpha = 0.15f),
+                unfocusedTextColor = Color.White,
+                focusedTextColor = Color.White
+            )
+        )
     }
 }
 
