@@ -278,6 +278,9 @@ fun VideoPlayerScreen(
             val mediaItem = MediaItem.fromUri(videoUri)
             playerController?.let {
                 it.setMediaItem(mediaItem)
+                // Reset speed to 1.0x for new files
+                playbackSpeed = 1.0f
+                it.playbackParameters = PlaybackParameters(1.0f)
                 it.prepare()
                 it.playWhenReady = true
             }
