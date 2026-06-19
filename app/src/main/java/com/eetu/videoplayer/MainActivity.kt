@@ -55,6 +55,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -121,6 +122,7 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.log10
 import kotlin.math.pow
+import androidx.compose.foundation.layout.fillMaxHeight
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 private val SEEK_SENSITIVITY = floatPreferencesKey("seek_sensitivity")
@@ -147,7 +149,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                VideoPlayerScreen(videoUri, isInPiPMode, onIsPlayingChanged = { isPlayingState = it })
+                VideoPlayerScreen(
+                    videoUri,
+                    isInPiPMode,
+                    onIsPlayingChanged = { isPlayingState = it })
             }
         }
     }
@@ -158,7 +163,10 @@ class MainActivity : ComponentActivity() {
         if (intent.action == Intent.ACTION_VIEW) {
             setContent {
                 VideoPlayerTheme {
-                    VideoPlayerScreen(intent.data, isInPiPMode, onIsPlayingChanged = { isPlayingState = it })
+                    VideoPlayerScreen(
+                        intent.data,
+                        isInPiPMode,
+                        onIsPlayingChanged = { isPlayingState = it })
                 }
             }
         }
@@ -180,7 +188,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInPiPMode = isInPictureInPictureMode
     }
@@ -195,9 +206,10 @@ fun VideoPlayerScreen(
 ) {
     val context = LocalContext.current
     var playerController by remember { mutableStateOf<MediaController?>(null) }
-    
+
     // Player State
     var isPlaying by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
@@ -206,17 +218,19 @@ fun VideoPlayerScreen(
     var isMuted by remember { mutableStateOf(false) }
     var screenBrightness by remember { mutableFloatStateOf(-1f) }
     var currentTracks by remember { mutableStateOf(Tracks.EMPTY) }
-    
+
     // Zoom/Pan State
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
     // UI State
     var showControls by remember { mutableStateOf(true) }
+    var isSliderScrubbing by remember { mutableStateOf(false) }
     var showSpeedDialog by remember { mutableStateOf(false) }
     var showAdjustments by remember { mutableStateOf(false) }
     var showTrackSelection by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var wasPlayingBeforeSliderScrub by remember { mutableStateOf(false) }
 
     // Sensitivity Settings
     var seekSensitivity by remember { mutableFloatStateOf(1.0f) }
@@ -228,11 +242,16 @@ fun VideoPlayerScreen(
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
-        context.dataStore.data.map { it[SEEK_SENSITIVITY] ?: 1.0f }.first().let { seekSensitivity = it }
-        context.dataStore.data.map { it[GESTURE_SENSITIVITY] ?: 1.0f }.first().let { gestureSensitivity = it }
-        context.dataStore.data.map { it[AUTO_LOAD_SUBTITLES] ?: true }.first().let { autoLoadSubtitles = it }
-        context.dataStore.data.map { it[PREFERRED_AUDIO_LANG] ?: "" }.first().let { prefAudioLang = it }
-        context.dataStore.data.map { it[PREFERRED_SUBTITLE_LANG] ?: "" }.first().let { prefSubLang = it }
+        context.dataStore.data.map { it[SEEK_SENSITIVITY] ?: 1.0f }.first()
+            .let { seekSensitivity = it }
+        context.dataStore.data.map { it[GESTURE_SENSITIVITY] ?: 1.0f }.first()
+            .let { gestureSensitivity = it }
+        context.dataStore.data.map { it[AUTO_LOAD_SUBTITLES] ?: true }.first()
+            .let { autoLoadSubtitles = it }
+        context.dataStore.data.map { it[PREFERRED_AUDIO_LANG] ?: "" }.first()
+            .let { prefAudioLang = it }
+        context.dataStore.data.map { it[PREFERRED_SUBTITLE_LANG] ?: "" }.first()
+            .let { prefSubLang = it }
     }
 
     // Apply preferred languages when they change or player is ready
@@ -242,9 +261,6 @@ fun VideoPlayerScreen(
                 .buildUpon()
                 .setPreferredAudioLanguage(prefAudioLang.takeIf { it.isNotBlank() })
                 .setPreferredTextLanguage(prefSubLang.takeIf { it.isNotBlank() })
-                // If autoLoadSubtitles is false, we might want to disable text tracks by default
-                // but usually preferredTextLanguage handle selection. 
-                // To strictly disable if false:
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !autoLoadSubtitles)
                 .build()
             controller.trackSelectionParameters = parameters
@@ -257,9 +273,18 @@ fun VideoPlayerScreen(
     var isSeeking by remember { mutableStateOf(false) }
     var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
     var lastSeekUpdateTime by remember { mutableLongStateOf(0L) }
+
+    // Multi-Tap State
+    var tapJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var tapCount by remember { mutableStateOf<Int>(0) }
+    var tapOverlayIsRight by remember { mutableStateOf(true) }
+    var tapOverlayVisible by remember { mutableStateOf(false) }
+    var tapOverlayText by remember { mutableStateOf("") }
+
     var isBrightnessDragging by remember { mutableStateOf(false) }
     var isHoldingSpeedBoost by remember { mutableStateOf(false) }
     var lastPinchEndTime by remember { mutableLongStateOf(0L) }
+
 
     val activity = context as? Activity
     LaunchedEffect(screenBrightness) {
@@ -271,30 +296,35 @@ fun VideoPlayerScreen(
     }
 
     DisposableEffect(context) {
-        val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val controllerFuture: ListenableFuture<MediaController> = MediaController.Builder(context, sessionToken).buildAsync()
-        
+        val sessionToken =
+            SessionToken(context, ComponentName(context, PlaybackService::class.java))
+        val controllerFuture: ListenableFuture<MediaController> =
+            MediaController.Builder(context, sessionToken).buildAsync()
+
         controllerFuture.addListener({
             val controller = controllerFuture.get()
             playerController = controller
-            
+
             isPlaying = controller.isPlaying
             onIsPlayingChanged(isPlaying)
             duration = controller.duration
             playbackSpeed = controller.playbackParameters.speed
             isMuted = controller.volume == 0f
             currentTracks = controller.currentTracks
-            
+
             controller.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlayingChanged: Boolean) {
                     isPlaying = isPlayingChanged
                     onIsPlayingChanged(isPlaying)
                 }
+
                 override fun onPlaybackStateChanged(state: Int) {
+                    isLoading = state == Player.STATE_BUFFERING
                     if (state == Player.STATE_READY) {
                         duration = controller.duration
                     }
                 }
+
                 override fun onTracksChanged(tracks: Tracks) {
                     currentTracks = tracks
                 }
@@ -347,10 +377,32 @@ fun VideoPlayerScreen(
     }
 
     // Auto-hide controls
-    LaunchedEffect(showControls) {
-        if (showControls && !showSpeedDialog && !showAdjustments && !showTrackSelection) {
+    LaunchedEffect(
+        showControls,
+        isSliderScrubbing,
+        isSeeking,
+        showSpeedDialog,
+        showAdjustments,
+        showTrackSelection
+    ) {
+        if (showControls && !showSpeedDialog && !showAdjustments && !showTrackSelection && !isSliderScrubbing && !isSeeking) {
             delay(3000)
             showControls = false
+        }
+    }
+
+    fun setSeekMode(fast: Boolean) {
+        playerController?.let { controller ->
+            val args = Bundle().apply {
+                putInt(
+                    PlaybackService.KEY_SEEK_MODE,
+                    if (fast) PlaybackService.SEEK_MODE_FAST else PlaybackService.SEEK_MODE_EXACT
+                )
+            }
+            controller.sendCustomCommand(
+                SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY),
+                args
+            )
         }
     }
 
@@ -360,75 +412,81 @@ fun VideoPlayerScreen(
     ) { innerPadding ->
         val configuration = LocalConfiguration.current
         val touchSlop = with(LocalDensity.current) { 16.dp.toPx() } // Standard touch slop
-        
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
                 .background(Color.Black)
-                .pointerInput(playerController, duration, showSpeedDialog, showAdjustments, showTrackSelection, showSettings) {
+                .pointerInput(
+                    playerController,
+                    duration,
+                    showSpeedDialog,
+                    showAdjustments,
+                    showTrackSelection,
+                    showSettings
+                ) {
                     if (isInPiPMode || showSpeedDialog || showAdjustments || showTrackSelection || showSettings) return@pointerInput
-                    
+
                     awaitEachGesture {
                         val firstDown = awaitFirstDown(requireUnconsumed = false)
+
+                        // Let the slider handle its own touches
+                        if (firstDown.isConsumed) return@awaitEachGesture
+
+                        // UX Dead Zone: Ignore bottom 25% if controls are visible
+                        val isTouchInBottomZone = firstDown.position.y > size.height * 0.75f
+                        if (showControls && isTouchInBottomZone) return@awaitEachGesture
+
                         var dragConsumed = false
                         var isLongPress = false
+                        var isPinching = false
                         val startPos = firstDown.position
                         val startTime = System.currentTimeMillis()
-                        
+                        var lastPosition = startPos
+
                         do {
                             val event = awaitPointerEvent()
+                            if (event.changes.any { it.isConsumed }) break
+
                             val changes = event.changes
-                            
+                            if (changes.isNotEmpty()) lastPosition = changes.last().position
+
                             if (changes.size == 1) {
-                                // Potential single-finger gesture
                                 val change = changes[0]
                                 if (change.pressed) {
-                                    val timeSincePinch = System.currentTimeMillis() - lastPinchEndTime
-                                    if (timeSincePinch < 300) { // 300ms cooldown after pinch
+                                    val timeSincePinch =
+                                        System.currentTimeMillis() - lastPinchEndTime
+                                    if (timeSincePinch < 300) {
                                         change.consume()
                                         continue
                                     }
 
                                     val dragAmount = change.position - startPos
                                     val timeElapsed = System.currentTimeMillis() - startTime
-                                    
+
                                     if (!dragConsumed && !isLongPress) {
                                         if (dragAmount.getDistance() > touchSlop) {
                                             dragConsumed = true
-                                            if (kotlin.math.abs(dragAmount.x) > kotlin.math.abs(dragAmount.y)) {
-                                                isSeeking = true
-                                                wasPlayingBeforeSeek = playerController?.isPlaying == true
-                                                initialSeekPosition = playerController?.currentPosition ?: 0L
-                                                playerController?.pause()
-                                            } else if (startPos.x > size.width / 2) {
+                                            // Only Brightness drag remains (Right side vertical)
+                                            if (kotlin.math.abs(dragAmount.y) > kotlin.math.abs(
+                                                    dragAmount.x
+                                                ) && startPos.x > size.width / 2
+                                            ) {
                                                 isBrightnessDragging = true
                                             }
                                         } else if (timeElapsed > 500) {
                                             isLongPress = true
                                             isHoldingSpeedBoost = true
-                                            playerController?.playbackParameters = PlaybackParameters(2.0f)
+                                            playerController?.playbackParameters =
+                                                PlaybackParameters(2.0f)
                                             showControls = false
                                         }
-                                    }
-
-                                    if (isSeeking) {
-                                        // Reasonable default: 30 seconds per screen width
-                                        val baseSensitivity = 30000f / size.width
-                                        seekDragDelta = (dragAmount.x * baseSensitivity * seekSensitivity).toLong()
-                                        val newPos = (initialSeekPosition + seekDragDelta).coerceIn(0L, duration)
-                                        
-                                        // Throttle seek updates to once per 1000ms
-                                        val currentTime = System.currentTimeMillis()
-                                        if (currentTime - lastSeekUpdateTime > 1000) {
-                                            playerController?.seekTo(newPos)
-                                            lastSeekUpdateTime = currentTime
-                                        }
-                                        currentPosition = newPos
-                                        change.consume()
                                     } else if (isBrightnessDragging) {
-                                        // Reasonable default: 100% screen height = 100% brightness change
-                                        val delta = (-dragAmount.y / size.height) * gestureSensitivity
+                                        // Calculate the Y delta directly using the previous position
+                                        val dragDeltaY = change.position.y - change.previousPosition.y
+                                        val delta = (-dragDeltaY / size.height) * gestureSensitivity
+
                                         screenBrightness = (screenBrightness.takeIf { it >= 0 } ?: 0.5f) + delta
                                         screenBrightness = screenBrightness.coerceIn(0.01f, 1f)
                                         change.consume()
@@ -437,22 +495,18 @@ fun VideoPlayerScreen(
                                     }
                                 }
                             } else if (changes.size >= 2) {
-                                // Multi-finger (Zoom/Pan)
-                                // Cancel any single finger gesture if a second finger is added
-                                if (isSeeking) {
-                                    isSeeking = false
-                                    if (wasPlayingBeforeSeek) playerController?.play()
-                                }
                                 isBrightnessDragging = false
                                 if (isHoldingSpeedBoost) {
                                     isHoldingSpeedBoost = false
-                                    playerController?.playbackParameters = PlaybackParameters(playbackSpeed)
+                                    playerController?.playbackParameters =
+                                        PlaybackParameters(playbackSpeed)
                                 }
-                                
+
                                 val zoom = event.calculateZoom()
                                 val pan = event.calculatePan()
 
                                 if (zoom != 1f || pan != Offset.Zero) {
+                                    isPinching = true
                                     scale = (scale * zoom).coerceIn(0.1f, 10f)
                                     val maxOffsetH = (size.width * scale + size.width) / 2
                                     val maxOffsetV = (size.height * scale + size.height) / 2
@@ -465,28 +519,111 @@ fun VideoPlayerScreen(
                                 }
                             }
                         } while (event.changes.any { it.pressed })
-                        
-                        // Release / End of gesture
-                        if (isSeeking) {
-                            val finalPos = (initialSeekPosition + seekDragDelta).coerceIn(0L, duration)
-                            playerController?.seekTo(finalPos)
-                            isSeeking = false
-                            if (wasPlayingBeforeSeek) playerController?.play()
-                            seekDragDelta = 0
-                            lastSeekUpdateTime = 0
-                        }
+
+                        // Gestures ended (finger lifted)
                         isBrightnessDragging = false
                         if (isHoldingSpeedBoost) {
                             isHoldingSpeedBoost = false
                             playerController?.playbackParameters = PlaybackParameters(playbackSpeed)
                         }
+
+                        // --- TAP ACCUMULATOR LOGIC ---
+                        val totalTime = System.currentTimeMillis() - startTime
+                        val totalDistance = (lastPosition - startPos).getDistance()
+
+                        // If it wasn't a drag, long press, or pinch, it's a tap!
+                        if (!dragConsumed && !isLongPress && !isPinching && totalDistance < touchSlop && totalTime < 300) {
+                            val tapOnRight = startPos.x > size.width / 2
+
+                            // If they tapped the opposite side, reset sequence
+                            if (tapCount > 0 && tapOverlayIsRight != tapOnRight) {
+                                tapCount = 1
+                                tapOverlayIsRight = tapOnRight
+                            } else {
+                                tapCount++
+                                tapOverlayIsRight = tapOnRight
+                            }
+
+                            // Update UI Overlay instantly
+                            if (tapCount >= 2) {
+                                val seekAmountSeconds = when (tapCount) {
+                                    2 -> 5
+                                    3 -> 10
+                                    else -> 30
+                                }
+                                tapOverlayText =
+                                    if (tapOnRight) "+$seekAmountSeconds seconds" else "-$seekAmountSeconds seconds"
+                                tapOverlayVisible = true
+                            }
+
+                            // Reset the timeout job
+                            tapJob?.cancel()
+                            tapJob = scope.launch {
+                                delay(300) // Wait 300ms to see if another tap comes
+
+                                if (tapCount == 1) {
+                                    // Single tap toggles controls
+                                    showControls = !showControls
+                                } else {
+                                    // Execute the final accumulated seek
+                                    val seekAmountMs = when (tapCount) {
+                                        2 -> 5000L
+                                        3 -> 10000L
+                                        else -> 30000L
+                                    }
+                                    val direction = if (tapOverlayIsRight) 1 else -1
+
+                                    playerController?.let {
+                                        val newPos =
+                                            (it.currentPosition + (seekAmountMs * direction)).coerceIn(
+                                                0L,
+                                                duration
+                                            )
+
+                                        // Briefly enable FAST seek mode for the jump
+                                        val fastArgs = Bundle().apply {
+                                            putInt(
+                                                PlaybackService.KEY_SEEK_MODE,
+                                                PlaybackService.SEEK_MODE_FAST
+                                            )
+                                        }
+                                        it.sendCustomCommand(
+                                            SessionCommand(
+                                                PlaybackService.ACTION_SET_SEEK_PARAMETERS,
+                                                Bundle.EMPTY
+                                            ), fastArgs
+                                        )
+
+                                        it.seekTo(newPos)
+                                        currentPosition = newPos
+
+                                        // Restore EXACT seek mode in background
+                                        launch {
+                                            delay(200)
+                                            val exactArgs = Bundle().apply {
+                                                putInt(
+                                                    PlaybackService.KEY_SEEK_MODE,
+                                                    PlaybackService.SEEK_MODE_EXACT
+                                                )
+                                            }
+                                            it.sendCustomCommand(
+                                                SessionCommand(
+                                                    PlaybackService.ACTION_SET_SEEK_PARAMETERS,
+                                                    Bundle.EMPTY
+                                                ), exactArgs
+                                            )
+                                        }
+                                    }
+                                }
+
+                                tapCount = 0
+                                // Keep the visual overlay up for a tiny bit longer, then fade out
+                                delay(200)
+                                tapOverlayVisible = false
+                            }
+                        }
                     }
-                }
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    enabled = !isInPiPMode
-                ) { showControls = !showControls },
+                },
             contentAlignment = Alignment.Center
         ) {
             if (videoUri != null && playerController != null) {
@@ -507,14 +644,23 @@ fun VideoPlayerScreen(
                         )
                 )
 
-                // Overlays
-                if (isSeeking) {
-                    Box(modifier = Modifier.fillMaxSize().padding(top = 32.dp), contentAlignment = Alignment.TopCenter) {
-                        SeekOverlay(
-                            currentPos = currentPosition,
-                            delta = seekDragDelta
-                        )
-                    }
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(48.dp),
+                        color = Color.White.copy(alpha = 0.7f)
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = tapOverlayVisible,
+                    enter = fadeIn() + androidx.compose.animation.expandVertically(expandFrom = Alignment.Top),
+                    exit = fadeOut() + androidx.compose.animation.shrinkVertically(shrinkTowards = Alignment.Top),
+                    modifier = Modifier.align(Alignment.TopCenter)
+                ) {
+                    TopSeekPopup(
+                        text = tapOverlayText,
+                        isRight = tapOverlayIsRight
+                    )
                 }
 
                 if (isBrightnessDragging) {
@@ -522,7 +668,12 @@ fun VideoPlayerScreen(
                 }
 
                 if (isHoldingSpeedBoost) {
-                    Box(modifier = Modifier.fillMaxSize().padding(top = 32.dp), contentAlignment = Alignment.TopCenter) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(top = 32.dp),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
                         SpeedBoostOverlay()
                     }
                 }
@@ -548,6 +699,17 @@ fun VideoPlayerScreen(
                                 it.seekTo(position)
                                 currentPosition = position
                             }
+                        },
+                        onScrubStart = {
+                            isSliderScrubbing = true
+                            wasPlayingBeforeSliderScrub = playerController?.playWhenReady == true
+                            setSeekMode(true)
+                            playerController?.pause()
+                        },
+                        onScrubEnd = {
+                            isSliderScrubbing = false
+                            setSeekMode(false)
+                            if (wasPlayingBeforeSliderScrub) playerController?.play()
                         },
                         onRewind = {
                             playerController?.let {
@@ -617,7 +779,7 @@ fun VideoPlayerScreen(
                         onDismiss = { showTrackSelection = false }
                     )
                 }
-                
+
                 if (showSpeedDialog && !isInPiPMode) {
                     SpeedDialog(
                         currentSpeed = playbackSpeed,
@@ -636,9 +798,9 @@ fun VideoPlayerScreen(
                         contrast = contrast,
                         onBrightnessChange = { brightness = it },
                         onContrastChange = { contrast = it },
-                        onSettingsClick = { 
+                        onSettingsClick = {
                             showAdjustments = false
-                            showSettings = true 
+                            showSettings = true
                         },
                         onDismiss = { showAdjustments = false }
                     )
@@ -651,25 +813,45 @@ fun VideoPlayerScreen(
                         autoLoadSubtitles = autoLoadSubtitles,
                         prefAudioLang = prefAudioLang,
                         prefSubLang = prefSubLang,
-                        onSeekSensitivityChange = { 
+                        onSeekSensitivityChange = {
                             seekSensitivity = it
-                            scope.launch { context.dataStore.edit { settings -> settings[SEEK_SENSITIVITY] = it } }
+                            scope.launch {
+                                context.dataStore.edit { settings ->
+                                    settings[SEEK_SENSITIVITY] = it
+                                }
+                            }
                         },
-                        onGestureSensitivityChange = { 
+                        onGestureSensitivityChange = {
                             gestureSensitivity = it
-                            scope.launch { context.dataStore.edit { settings -> settings[GESTURE_SENSITIVITY] = it } }
+                            scope.launch {
+                                context.dataStore.edit { settings ->
+                                    settings[GESTURE_SENSITIVITY] = it
+                                }
+                            }
                         },
-                        onAutoLoadSubtitlesChange = { 
+                        onAutoLoadSubtitlesChange = {
                             autoLoadSubtitles = it
-                            scope.launch { context.dataStore.edit { settings -> settings[AUTO_LOAD_SUBTITLES] = it } }
+                            scope.launch {
+                                context.dataStore.edit { settings ->
+                                    settings[AUTO_LOAD_SUBTITLES] = it
+                                }
+                            }
                         },
-                        onPrefAudioLangChange = { 
+                        onPrefAudioLangChange = {
                             prefAudioLang = it
-                            scope.launch { context.dataStore.edit { settings -> settings[PREFERRED_AUDIO_LANG] = it } }
+                            scope.launch {
+                                context.dataStore.edit { settings ->
+                                    settings[PREFERRED_AUDIO_LANG] = it
+                                }
+                            }
                         },
-                        onPrefSubLangChange = { 
+                        onPrefSubLangChange = {
                             prefSubLang = it
-                            scope.launch { context.dataStore.edit { settings -> settings[PREFERRED_SUBTITLE_LANG] = it } }
+                            scope.launch {
+                                context.dataStore.edit { settings ->
+                                    settings[PREFERRED_SUBTITLE_LANG] = it
+                                }
+                            }
                         },
                         onDismiss = { showSettings = false }
                     )
@@ -678,7 +860,6 @@ fun VideoPlayerScreen(
             } else if (videoUri == null) {
                 EmptyState()
             } else {
-                // Loading state or waiting for controller
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     androidx.compose.material3.CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                 }
@@ -794,10 +975,14 @@ fun TrackSelectionDialog(
                 color = MaterialTheme.colorScheme.primary
             )
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             LazyColumn(modifier = Modifier.weight(1f)) {
                 item {
-                    Text("Audio", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                    Text(
+                        "Audio",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                 }
                 val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
                 items(audioGroups) { group ->
@@ -809,32 +994,36 @@ fun TrackSelectionDialog(
                         )
                     }
                 }
-                
+
                 item {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                    Text("Subtitles", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                    Text(
+                        "Subtitles",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                     TrackItem(
                         label = "None",
                         isSelected = !tracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected },
                         onClick = { onDisableType(C.TRACK_TYPE_TEXT) }
                     )
                 }
-                
+
                 val subtitleGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
                 items(subtitleGroups) { group ->
                     for (i in 0 until group.length) {
                         TrackItem(
                             label = group.mediaTrackGroup.getFormat(i).language ?: "Unknown",
                             isSelected = group.isTrackSelected(i),
-                            onClick = { 
+                            onClick = {
                                 onEnableType(C.TRACK_TYPE_TEXT)
-                                onTrackSelected(group, i) 
+                                onTrackSelected(group, i)
                             }
                         )
                     }
                 }
             }
-            
+
             Text(
                 text = "Close",
                 modifier = Modifier
@@ -887,6 +1076,8 @@ fun PlayerControls(
     isMuted: Boolean,
     onPlayPauseToggle: () -> Unit,
     onSeek: (Long) -> Unit,
+    onScrubStart: () -> Unit,
+    onScrubEnd: () -> Unit,
     onRewind: () -> Unit,
     onForward: () -> Unit,
     onSpeedClick: () -> Unit,
@@ -897,7 +1088,6 @@ fun PlayerControls(
     Box(
         modifier = Modifier.fillMaxSize()
     ) {
-        // Top Left: Mute and Speed Buttons
         Row(
             modifier = Modifier
                 .align(Alignment.TopStart)
@@ -917,7 +1107,6 @@ fun PlayerControls(
             )
         }
 
-        // Top Right: Settings/Adjustments and Tracks
         Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -937,14 +1126,12 @@ fun PlayerControls(
             )
         }
 
-        // Bottom Controls
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .padding(bottom = 32.dp, start = 16.dp, end = 16.dp)
         ) {
-            // Progress Bar Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -955,12 +1142,17 @@ fun PlayerControls(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )
-                
+
                 CustomSlider(
                     value = currentPosition.toFloat(),
                     onValueChange = { onSeek(it.toLong()) },
+                    onScrubStart = onScrubStart,
+                    onScrubEnd = onScrubEnd,
                     valueRange = 0f..duration.coerceAtLeast(0).toFloat(),
-                    modifier = Modifier.weight(1f).height(16.dp).padding(horizontal = 8.dp)
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(16.dp)
+                        .padding(horizontal = 8.dp)
                 )
 
                 Text(
@@ -973,16 +1165,19 @@ fun PlayerControls(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Centered Playback Controls
             Box(modifier = Modifier.fillMaxWidth()) {
-                // Centered Group
                 Row(
                     modifier = Modifier.align(Alignment.Center),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(24.dp)
                 ) {
                     IconButton(onClick = onRewind) {
-                        Icon(Icons.Default.Replay10, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                        Icon(
+                            Icons.Default.Replay10,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(36.dp)
+                        )
                     }
                     IconButton(
                         onClick = onPlayPauseToggle,
@@ -996,7 +1191,12 @@ fun PlayerControls(
                         )
                     }
                     IconButton(onClick = onForward) {
-                        Icon(Icons.Default.Forward10, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                        Icon(
+                            Icons.Default.Forward10,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(36.dp)
+                        )
                     }
                 }
             }
@@ -1008,12 +1208,44 @@ fun PlayerControls(
 fun CustomSlider(
     value: Float,
     onValueChange: (Float) -> Unit,
+    onScrubStart: () -> Unit = {},
+    onScrubEnd: () -> Unit = {},
     valueRange: ClosedFloatingPointRange<Float>,
     modifier: Modifier = Modifier
 ) {
+    var isScrubbing by remember { mutableStateOf(false) }
+    var sliderValue by remember { mutableFloatStateOf(value) }
+    var lastSeekTime by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(value) {
+        if (!isScrubbing) {
+            sliderValue = value
+        }
+    }
+
     Slider(
-        value = value,
-        onValueChange = onValueChange,
+        value = sliderValue,
+        onValueChange = { newValue ->
+            if (!isScrubbing) {
+                isScrubbing = true
+                onScrubStart()
+            }
+            sliderValue = newValue
+
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastSeekTime > 100) {
+                onValueChange(newValue)
+                lastSeekTime = currentTime
+            }
+        },
+        onValueChangeFinished = {
+            // Force a final precise seek, bypassing throttle
+            onValueChange(sliderValue)
+            lastSeekTime =
+                System.currentTimeMillis() // Update lastSeekTime to prevent double seek if onValueChange logic changes
+            isScrubbing = false
+            onScrubEnd()
+        },
         valueRange = valueRange,
         modifier = modifier,
         colors = SliderDefaults.colors(
@@ -1052,7 +1284,7 @@ fun SpeedDialog(
     onDismiss: () -> Unit
 ) {
     val speeds = listOf(0.01f, 0.05f, 0.1f, 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 4.0f, 8.0f)
-    
+
     Surface(
         modifier = Modifier
             .fillMaxWidth(0.8f)
@@ -1079,7 +1311,10 @@ fun SpeedDialog(
                                 .clickable { onSpeedSelected(speed) },
                             color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
                             shape = CircleShape,
-                            border = if (!isSelected) androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null
+                            border = if (!isSelected) androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outline
+                            ) else null
                         ) {
                             Text(
                                 text = "${speed}x",
@@ -1117,7 +1352,10 @@ fun AdjustmentsOverlay(
         modifier = Modifier
             .fillMaxWidth(0.9f)
             .padding(16.dp)
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { },
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) { },
         shape = MaterialTheme.shapes.extraLarge,
         color = Color.Black.copy(alpha = 0.95f),
         tonalElevation = 12.dp
@@ -1139,30 +1377,34 @@ fun AdjustmentsOverlay(
                     fontWeight = FontWeight.ExtraBold
                 )
                 IconButton(onClick = onSettingsClick) {
-                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
+                    Icon(
+                        Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        tint = Color.White
+                    )
                 }
             }
-            
+
             Spacer(modifier = Modifier.height(24.dp))
-            
+
             AdjustmentSlider(
                 label = "Brightness",
                 value = brightness,
                 range = -1f..1f,
                 onValueChange = onBrightnessChange
             )
-            
+
             Spacer(modifier = Modifier.height(24.dp))
-            
+
             AdjustmentSlider(
                 label = "Contrast",
                 value = contrast,
                 range = -1f..1f,
                 onValueChange = onContrastChange
             )
-            
+
             Spacer(modifier = Modifier.height(32.dp))
-            
+
             Text(
                 text = "DONE",
                 modifier = Modifier
@@ -1211,12 +1453,12 @@ fun SettingsDialog(
                 color = Color.White,
                 fontWeight = FontWeight.ExtraBold
             )
-            
+
             Spacer(modifier = Modifier.height(24.dp))
 
             Text("GESTURES", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             AdjustmentSlider(
                 label = "Seek Sensitivity",
                 value = seekSensitivity,
@@ -1237,7 +1479,11 @@ fun SettingsDialog(
             HorizontalDivider(color = Color.White.copy(alpha = 0.2f))
             Spacer(modifier = Modifier.height(16.dp))
 
-            Text("TRACK PREFERENCES", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
+            Text(
+                "TRACK PREFERENCES",
+                style = MaterialTheme.typography.labelLarge,
+                color = Color.Gray
+            )
             Spacer(modifier = Modifier.height(16.dp))
 
             Row(
@@ -1267,9 +1513,9 @@ fun SettingsDialog(
                 value = prefSubLang,
                 onValueChange = onPrefSubLangChange
             )
-            
+
             Spacer(modifier = Modifier.height(32.dp))
-            
+
             Text(
                 text = "CLOSE",
                 modifier = Modifier
@@ -1306,17 +1552,45 @@ fun LanguageField(label: String, value: String, onValueChange: (String) -> Unit)
 }
 
 @Composable
+fun TopSeekPopup(text: String, isRight: Boolean) {
+    Box(
+        modifier = Modifier
+            // Push it down slightly from the very top edge
+            .padding(top = 48.dp)
+            .background(
+                color = Color.Black.copy(alpha = 0.75f),
+                shape = RoundedCornerShape(24.dp) // Pill shape
+            )
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = if (isRight) Icons.Default.Forward10 else Icons.Default.Replay10,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = text,
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
+            )
+        }
+    }
+}
+
+@Composable
 fun AdjustmentSlider(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float> = -1f..1f,
     onValueChange: (Float) -> Unit
 ) {
-    // Clever mapping for sensitivity ranges (e.g., 0.01 to 100)
-    // If the range spans multiple orders of magnitude, use a logarithmic scale 
-    // so that 1.0 is in the center.
     val useLogScale = range.start > 0 && (range.endInclusive / range.start) >= 100f
-    
+
     val sliderValue = if (useLogScale) log10(value) else value
     val sliderRange = if (useLogScale) {
         log10(range.start)..log10(range.endInclusive)
@@ -1347,9 +1621,9 @@ fun AdjustmentSlider(
         Spacer(modifier = Modifier.height(4.dp))
         Slider(
             value = sliderValue,
-            onValueChange = { 
+            onValueChange = {
                 val newValue = if (useLogScale) 10f.pow(it) else it
-                onValueChange(newValue) 
+                onValueChange(newValue)
             },
             valueRange = sliderRange,
             colors = SliderDefaults.colors(
