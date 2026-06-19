@@ -37,6 +37,7 @@
                 <data android:scheme="http" />
                 <data android:scheme="https" />
                 <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
             </intent-filter>
 
             <!-- Generic VIEW intent for URI strings -->
