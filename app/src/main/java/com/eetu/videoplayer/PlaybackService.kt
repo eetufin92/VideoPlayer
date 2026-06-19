@@ -3,16 +3,12 @@ package com.eetu.videoplayer
 import android.content.Intent
 import android.os.Bundle
 import androidx.annotation.OptIn
-import androidx.media3.common.Effect
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.common.util.Log
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
-import androidx.media3.effect.Brightness
-import androidx.media3.effect.Contrast
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -110,7 +106,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private inner class MediaSessionCallback : MediaSession.Callback {
+    private class MediaSessionCallback : MediaSession.Callback {
 
         override fun onCustomCommand(
             session: MediaSession,
