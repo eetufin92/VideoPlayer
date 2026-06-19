@@ -441,6 +441,9 @@ fun VideoPlayerScreen(
                         var dragConsumed = false
                         var isLongPress = false
                         var isPinching = false
+                        var isHorizontalSwipe = false
+                        var swipeDeltaX = 0f
+
                         val startPos = firstDown.position
                         val startTime = System.currentTimeMillis()
                         var lastPosition = startPos
@@ -455,8 +458,7 @@ fun VideoPlayerScreen(
                             if (changes.size == 1) {
                                 val change = changes[0]
                                 if (change.pressed) {
-                                    val timeSincePinch =
-                                        System.currentTimeMillis() - lastPinchEndTime
+                                    val timeSincePinch = System.currentTimeMillis() - lastPinchEndTime
                                     if (timeSincePinch < 300) {
                                         change.consume()
                                         continue
@@ -468,25 +470,27 @@ fun VideoPlayerScreen(
                                     if (!dragConsumed && !isLongPress) {
                                         if (dragAmount.getDistance() > touchSlop) {
                                             dragConsumed = true
-                                            // Only Brightness drag remains (Right side vertical)
-                                            if (kotlin.math.abs(dragAmount.y) > kotlin.math.abs(
-                                                    dragAmount.x
-                                                ) && startPos.x > size.width / 2
-                                            ) {
+                                            // Detect Swipe Direction
+                                            if (kotlin.math.abs(dragAmount.x) > kotlin.math.abs(dragAmount.y)) {
+                                                isHorizontalSwipe = true
+                                            } else if (startPos.x > size.width / 2) {
                                                 isBrightnessDragging = true
                                             }
                                         } else if (timeElapsed > 500) {
                                             isLongPress = true
                                             isHoldingSpeedBoost = true
-                                            playerController?.playbackParameters =
-                                                PlaybackParameters(2.0f)
+                                            playerController?.playbackParameters = PlaybackParameters(2.0f)
                                             showControls = false
                                         }
+                                    }
+
+                                    if (isHorizontalSwipe) {
+                                        // Just track the distance, do nothing until finger lifts
+                                        swipeDeltaX = change.position.x - startPos.x
+                                        change.consume()
                                     } else if (isBrightnessDragging) {
-                                        // Calculate the Y delta directly using the previous position
                                         val dragDeltaY = change.position.y - change.previousPosition.y
                                         val delta = (-dragDeltaY / size.height) * gestureSensitivity
-
                                         screenBrightness = (screenBrightness.takeIf { it >= 0 } ?: 0.5f) + delta
                                         screenBrightness = screenBrightness.coerceIn(0.01f, 1f)
                                         change.consume()
@@ -496,10 +500,10 @@ fun VideoPlayerScreen(
                                 }
                             } else if (changes.size >= 2) {
                                 isBrightnessDragging = false
+                                isHorizontalSwipe = false // Cancel swipe if they pinch
                                 if (isHoldingSpeedBoost) {
                                     isHoldingSpeedBoost = false
-                                    playerController?.playbackParameters =
-                                        PlaybackParameters(playbackSpeed)
+                                    playerController?.playbackParameters = PlaybackParameters(playbackSpeed)
                                 }
 
                                 val zoom = event.calculateZoom()
@@ -520,22 +524,51 @@ fun VideoPlayerScreen(
                             }
                         } while (event.changes.any { it.pressed })
 
-                        // Gestures ended (finger lifted)
+                        // --- GESTURES ENDED (Finger Lifted) ---
                         isBrightnessDragging = false
                         if (isHoldingSpeedBoost) {
                             isHoldingSpeedBoost = false
                             playerController?.playbackParameters = PlaybackParameters(playbackSpeed)
                         }
 
-                        // --- TAP ACCUMULATOR LOGIC ---
                         val totalTime = System.currentTimeMillis() - startTime
                         val totalDistance = (lastPosition - startPos).getDistance()
 
-                        // If it wasn't a drag, long press, or pinch, it's a tap!
-                        if (!dragConsumed && !isLongPress && !isPinching && totalDistance < touchSlop && totalTime < 300) {
+                        // --- QUICK SWIPE EXECUTION ---
+                        // If it was a horizontal drag and it was relatively quick (under 500ms)
+                        if (isHorizontalSwipe && totalTime < 500) {
+                            val direction = if (swipeDeltaX > 0) 1 else -1
+                            val seekAmountMs = 5000L // 5 seconds
+
+                            // Show Top Popup
+                            tapOverlayIsRight = direction == 1
+                            tapOverlayText = if (direction == 1) "+5 seconds" else "-5 seconds"
+                            tapOverlayVisible = true
+
+                            // Execute Jump
+                            playerController?.let {
+                                val newPos = (it.currentPosition + (seekAmountMs * direction)).coerceIn(0L, duration)
+
+                                val fastArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_FAST) }
+                                it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), fastArgs)
+
+                                it.seekTo(newPos)
+                                currentPosition = newPos
+
+                                scope.launch {
+                                    delay(200)
+                                    val exactArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_EXACT) }
+                                    it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), exactArgs)
+                                    delay(600) // Keep popup visible briefly
+                                    tapOverlayVisible = false
+                                }
+                            }
+                        }
+                        // --- TAP ACCUMULATOR LOGIC ---
+                        // If it wasn't a drag, swipe, long press, or pinch, it's a tap!
+                        else if (!dragConsumed && !isLongPress && !isPinching && totalDistance < touchSlop && totalTime < 300) {
                             val tapOnRight = startPos.x > size.width / 2
 
-                            // If they tapped the opposite side, reset sequence
                             if (tapCount > 0 && tapOverlayIsRight != tapOnRight) {
                                 tapCount = 1
                                 tapOverlayIsRight = tapOnRight
@@ -544,28 +577,23 @@ fun VideoPlayerScreen(
                                 tapOverlayIsRight = tapOnRight
                             }
 
-                            // Update UI Overlay instantly
                             if (tapCount >= 2) {
                                 val seekAmountSeconds = when (tapCount) {
                                     2 -> 5
                                     3 -> 10
                                     else -> 30
                                 }
-                                tapOverlayText =
-                                    if (tapOnRight) "+$seekAmountSeconds seconds" else "-$seekAmountSeconds seconds"
+                                tapOverlayText = if (tapOnRight) "+$seekAmountSeconds seconds" else "-$seekAmountSeconds seconds"
                                 tapOverlayVisible = true
                             }
 
-                            // Reset the timeout job
                             tapJob?.cancel()
                             tapJob = scope.launch {
-                                delay(300) // Wait 300ms to see if another tap comes
+                                delay(300)
 
                                 if (tapCount == 1) {
-                                    // Single tap toggles controls
                                     showControls = !showControls
                                 } else {
-                                    // Execute the final accumulated seek
                                     val seekAmountMs = when (tapCount) {
                                         2 -> 5000L
                                         3 -> 10000L
@@ -574,51 +602,24 @@ fun VideoPlayerScreen(
                                     val direction = if (tapOverlayIsRight) 1 else -1
 
                                     playerController?.let {
-                                        val newPos =
-                                            (it.currentPosition + (seekAmountMs * direction)).coerceIn(
-                                                0L,
-                                                duration
-                                            )
+                                        val newPos = (it.currentPosition + (seekAmountMs * direction)).coerceIn(0L, duration)
 
-                                        // Briefly enable FAST seek mode for the jump
-                                        val fastArgs = Bundle().apply {
-                                            putInt(
-                                                PlaybackService.KEY_SEEK_MODE,
-                                                PlaybackService.SEEK_MODE_FAST
-                                            )
-                                        }
-                                        it.sendCustomCommand(
-                                            SessionCommand(
-                                                PlaybackService.ACTION_SET_SEEK_PARAMETERS,
-                                                Bundle.EMPTY
-                                            ), fastArgs
-                                        )
+                                        val fastArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_FAST) }
+                                        it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), fastArgs)
 
                                         it.seekTo(newPos)
                                         currentPosition = newPos
 
-                                        // Restore EXACT seek mode in background
                                         launch {
                                             delay(200)
-                                            val exactArgs = Bundle().apply {
-                                                putInt(
-                                                    PlaybackService.KEY_SEEK_MODE,
-                                                    PlaybackService.SEEK_MODE_EXACT
-                                                )
-                                            }
-                                            it.sendCustomCommand(
-                                                SessionCommand(
-                                                    PlaybackService.ACTION_SET_SEEK_PARAMETERS,
-                                                    Bundle.EMPTY
-                                                ), exactArgs
-                                            )
+                                            val exactArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_EXACT) }
+                                            it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), exactArgs)
                                         }
                                     }
                                 }
 
                                 tapCount = 0
-                                // Keep the visual overlay up for a tiny bit longer, then fade out
-                                delay(200)
+                                delay(400)
                                 tapOverlayVisible = false
                             }
                         }
