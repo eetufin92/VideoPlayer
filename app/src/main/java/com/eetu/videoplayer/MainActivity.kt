@@ -7,21 +7,21 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -43,18 +43,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.BrightnessLow
-import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -73,6 +72,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -85,19 +85,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
-import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.media3.common.C
@@ -122,7 +120,6 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.log10
 import kotlin.math.pow
-import androidx.compose.foundation.layout.fillMaxHeight
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 private val SEEK_SENSITIVITY = floatPreferencesKey("seek_sensitivity")
@@ -150,9 +147,17 @@ class MainActivity : ComponentActivity() {
                 }
 
                 VideoPlayerScreen(
-                    videoUri,
-                    isInPiPMode,
-                    onIsPlayingChanged = { isPlayingState = it })
+                    videoUri = videoUri,
+                    isInPiPMode = isInPiPMode,
+                    onIsPlayingChanged = { isPlayingState = it },
+                    onClose = {
+                        if (intent?.action == Intent.ACTION_VIEW) {
+                            finish() // Close the app completely
+                        } else {
+                            videoUri = null // Return to EmptyState
+                        }
+                    }
+                )
             }
         }
     }
@@ -164,9 +169,13 @@ class MainActivity : ComponentActivity() {
             setContent {
                 VideoPlayerTheme {
                     VideoPlayerScreen(
-                        intent.data,
-                        isInPiPMode,
-                        onIsPlayingChanged = { isPlayingState = it })
+                        videoUri = intent.data,
+                        isInPiPMode = isInPiPMode,
+                        onIsPlayingChanged = { isPlayingState = it },
+                        onClose = {
+                            finish()
+                        }
+                    )
                 }
             }
         }
@@ -180,12 +189,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun enterPiPMode() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val params = PictureInPictureParams.Builder()
-                .setAspectRatio(Rational(16, 9))
-                .build()
-            enterPictureInPictureMode(params)
-        }
+        val params = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+            .build()
+        enterPictureInPictureMode(params)
     }
 
     override fun onPictureInPictureModeChanged(
@@ -202,7 +209,8 @@ class MainActivity : ComponentActivity() {
 fun VideoPlayerScreen(
     videoUri: Uri?,
     isInPiPMode: Boolean,
-    onIsPlayingChanged: (Boolean) -> Unit
+    onIsPlayingChanged: (Boolean) -> Unit,
+    onClose: () -> Unit
 ) {
     val context = LocalContext.current
     var playerController by remember { mutableStateOf<MediaController?>(null) }
@@ -218,6 +226,7 @@ fun VideoPlayerScreen(
     var isMuted by remember { mutableStateOf(false) }
     var screenBrightness by remember { mutableFloatStateOf(-1f) }
     var currentTracks by remember { mutableStateOf(Tracks.EMPTY) }
+    var hasVideoTrack by remember { mutableStateOf(true) }
 
     // Zoom/Pan State
     var scale by remember { mutableFloatStateOf(1f) }
@@ -267,16 +276,21 @@ fun VideoPlayerScreen(
         }
     }
 
+    // Only intercept the back button if a video is currently loaded
+    BackHandler(enabled = videoUri != null) {
+        playerController?.let {
+            it.stop() // Stops the background service playback
+            it.clearMediaItems() // Flushes the active stream
+        }
+        onClose() // Tells the Activity to finish or reset
+    }
+
     // Gesture State
-    var seekDragDelta by remember { mutableLongStateOf(0L) }
-    var initialSeekPosition by remember { mutableLongStateOf(0L) }
     var isSeeking by remember { mutableStateOf(false) }
-    var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
-    var lastSeekUpdateTime by remember { mutableLongStateOf(0L) }
 
     // Multi-Tap State
     var tapJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
-    var tapCount by remember { mutableStateOf<Int>(0) }
+    var tapCount by remember { mutableIntStateOf(0) }
     var tapOverlayIsRight by remember { mutableStateOf(true) }
     var tapOverlayVisible by remember { mutableStateOf(false) }
     var tapOverlayText by remember { mutableStateOf("") }
@@ -289,7 +303,7 @@ fun VideoPlayerScreen(
     val activity = context as? Activity
     LaunchedEffect(screenBrightness) {
         if (screenBrightness >= 0f) {
-            activity?.window?.attributes = activity?.window?.attributes?.apply {
+            activity?.window?.attributes = activity.window?.attributes?.apply {
                 this.screenBrightness = screenBrightness.coerceIn(0.01f, 1.0f)
             }
         }
@@ -327,6 +341,7 @@ fun VideoPlayerScreen(
 
                 override fun onTracksChanged(tracks: Tracks) {
                     currentTracks = tracks
+                    hasVideoTrack = tracks.groups.any { it.type == C.TRACK_TYPE_VIDEO }
                 }
             })
         }, MoreExecutors.directExecutor())
@@ -410,7 +425,6 @@ fun VideoPlayerScreen(
         modifier = Modifier.fillMaxSize(),
         containerColor = Color.Black
     ) { innerPadding ->
-        val configuration = LocalConfiguration.current
         val touchSlop = with(LocalDensity.current) { 16.dp.toPx() } // Standard touch slop
 
         Box(
@@ -628,22 +642,26 @@ fun VideoPlayerScreen(
             contentAlignment = Alignment.Center
         ) {
             if (videoUri != null && playerController != null) {
-                AndroidView(
-                    factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            player = playerController
-                            useController = false
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer(
-                            scaleX = if (isInPiPMode) 1f else scale,
-                            scaleY = if (isInPiPMode) 1f else scale,
-                            translationX = if (isInPiPMode) 0f else offset.x,
-                            translationY = if (isInPiPMode) 0f else offset.y
-                        )
-                )
+                if (hasVideoTrack) {
+                    AndroidView(
+                        factory = { ctx ->
+                            PlayerView(ctx).apply {
+                                player = playerController
+                                useController = false
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer(
+                                scaleX = if (isInPiPMode) 1f else scale,
+                                scaleY = if (isInPiPMode) 1f else scale,
+                                translationX = if (isInPiPMode) 0f else offset.x,
+                                translationY = if (isInPiPMode) 0f else offset.y
+                            )
+                    )
+                } else {
+                    AudioOnlyState(isPlaying = isPlaying)
+                }
 
                 if (isLoading) {
                     CircularProgressIndicator(
@@ -862,37 +880,9 @@ fun VideoPlayerScreen(
                 EmptyState()
             } else {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    androidx.compose.material3.CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                 }
             }
-        }
-    }
-}
-
-@Composable
-fun SeekOverlay(currentPos: Long, delta: Long) {
-    Box(
-        modifier = Modifier
-            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = if (delta >= 0) Icons.Default.Forward10 else Icons.Default.Replay10,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            val deltaText = if (delta >= 0) "+${formatTime(delta)}" else "-${formatTime(-delta)}"
-            Text(
-                text = "${formatTime(currentPos)} [$deltaText]",
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1
-            )
         }
     }
 }
@@ -1053,7 +1043,7 @@ fun TrackItem(label: String, isSelected: Boolean, onClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                imageVector = if (label == "None") Icons.Default.VolumeOff else if (label.length > 3) Icons.Default.Subtitles else Icons.Default.Audiotrack,
+                imageVector = if (label == "None") Icons.AutoMirrored.Filled.VolumeOff else if (label.length > 3) Icons.Default.Subtitles else Icons.Default.Audiotrack,
                 contentDescription = null,
                 modifier = Modifier.size(20.dp),
                 tint = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
@@ -1096,7 +1086,7 @@ fun PlayerControls(
             verticalAlignment = Alignment.CenterVertically
         ) {
             ControlIcon(
-                icon = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                 label = "",
                 onClick = onMuteToggle
             )
@@ -1147,13 +1137,13 @@ fun PlayerControls(
                 CustomSlider(
                     value = currentPosition.toFloat(),
                     onValueChange = { onSeek(it.toLong()) },
-                    onScrubStart = onScrubStart,
-                    onScrubEnd = onScrubEnd,
                     valueRange = 0f..duration.coerceAtLeast(0).toFloat(),
                     modifier = Modifier
                         .weight(1f)
                         .height(16.dp)
-                        .padding(horizontal = 8.dp)
+                        .padding(horizontal = 8.dp),
+                    onScrubStart = onScrubStart,
+                    onScrubEnd = onScrubEnd,
                 )
 
                 Text(
@@ -1209,10 +1199,10 @@ fun PlayerControls(
 fun CustomSlider(
     value: Float,
     onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    modifier: Modifier = Modifier,
     onScrubStart: () -> Unit = {},
     onScrubEnd: () -> Unit = {},
-    valueRange: ClosedFloatingPointRange<Float>,
-    modifier: Modifier = Modifier
 ) {
     var isScrubbing by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableFloatStateOf(value) }
@@ -1231,7 +1221,6 @@ fun CustomSlider(
                 isScrubbing = true
                 onScrubStart()
             }
-            sliderValue = newValue
 
             val currentTime = System.currentTimeMillis()
             if (currentTime - lastSeekTime > 100) {
@@ -1242,8 +1231,7 @@ fun CustomSlider(
         onValueChangeFinished = {
             // Force a final precise seek, bypassing throttle
             onValueChange(sliderValue)
-            lastSeekTime =
-                System.currentTimeMillis() // Update lastSeekTime to prevent double seek if onValueChange logic changes
+            // Update lastSeekTime to prevent double seek if onValueChange logic changes
             isScrubbing = false
             onScrubEnd()
         },
@@ -1255,6 +1243,51 @@ fun CustomSlider(
             inactiveTrackColor = Color.White.copy(alpha = 0.3f)
         )
     )
+}
+
+@Composable
+fun AudioOnlyState(isPlaying: Boolean) {
+    // Subtle pulsing animation when playing
+    val infiniteTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "audio_pulse")
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = if (isPlaying) 1.15f else 1f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = androidx.compose.animation.core.tween(1000, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+        ),
+        label = "audio_pulse_scale"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF121212)), // Slightly lighter than pure black for contrast
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                modifier = Modifier
+                    .size(120.dp)
+                    .graphicsLayer(scaleX = scale, scaleY = scale)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Audiotrack,
+                    contentDescription = "Audio Playing",
+                    modifier = Modifier.size(64.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = "Audio Playback",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White.copy(alpha = 0.7f)
+            )
+        }
+    }
 }
 
 @Composable
