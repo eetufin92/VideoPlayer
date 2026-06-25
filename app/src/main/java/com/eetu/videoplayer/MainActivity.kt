@@ -587,7 +587,7 @@ fun VideoPlayerScreen(
                                             } else if (startPos.x > size.width / 2) {
                                                 isBrightnessDragging = true
                                             }
-                                        } else if (timeElapsed > 500) {
+                                        } else if (timeElapsed > 300) {
                                             isLongPress = true
                                             isHoldingSpeedBoost = true
                                             playerController?.playbackParameters = PlaybackParameters(2.0f)
@@ -708,7 +708,7 @@ fun VideoPlayerScreen(
 
                             tapJob?.cancel()
                             tapJob = scope.launch {
-                                delay(300)
+                                delay(200)
 
                                 if (tapCount == 1) {
                                     showControls = !showControls
