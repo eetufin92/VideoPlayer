@@ -244,6 +244,15 @@ fun VideoPlayerScreen(
     var screenBrightness by remember { mutableFloatStateOf(-1f) }
     var currentTracks by remember { mutableStateOf(Tracks.EMPTY) }
     var hasVideoTrack by remember { mutableStateOf(true) }
+    val videoFrameRate = remember(currentTracks) {
+        currentTracks.groups
+            .find { it.type == C.TRACK_TYPE_VIDEO }
+            ?.let { group ->
+                (0 until group.length)
+                    .map { group.mediaTrackGroup.getFormat(it).frameRate }
+                    .firstOrNull { it > 0f }
+            } ?: 30f
+    }
 
     // Zoom/Pan State
     var scale by remember { mutableFloatStateOf(1f) }
@@ -640,28 +649,31 @@ fun VideoPlayerScreen(
                         // If it was a horizontal drag and it was relatively quick (under 500ms)
                         if (!hasChildConsumed && isHorizontalSwipe && totalTime < 500) {
                             val direction = if (swipeDeltaX > 0) 1 else -1
-                            val seekAmountMs = 5000L // 5 seconds
+                            val baseMs = 5000L
+                            val scaledMs = (baseMs * playbackSpeed).toLong()
+                            val frameDurationMs = (1000f / videoFrameRate).toLong()
+                            val finalMs = maxOf(scaledMs, frameDurationMs)
 
                             // Show Top Popup
                             tapOverlayIsRight = direction == 1
-                            tapOverlayText = if (direction == 1) "+5 seconds" else "-5 seconds"
+                            val finalSeconds = finalMs / 1000f
+                            val text = if (finalSeconds < 1f) "${finalMs}ms" else String.format(Locale.US, "%.1fs", finalSeconds)
+                            tapOverlayText = if (direction == 1) "+$text" else "-$text"
                             tapOverlayVisible = true
 
                             // Execute Jump
                             playerController?.let {
-                                val newPos = (it.currentPosition + (seekAmountMs * direction)).coerceIn(0L, duration)
+                                val newPos = (it.currentPosition + (finalMs * direction)).coerceIn(0L, duration)
 
-                                val fastArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_FAST) }
-                                it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), fastArgs)
+                                // Use EXACT mode for these scaled jumps
+                                val exactArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_EXACT) }
+                                it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), exactArgs)
 
                                 it.seekTo(newPos)
                                 currentPosition = newPos
 
                                 scope.launch {
-                                    delay(200)
-                                    val exactArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_EXACT) }
-                                    it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), exactArgs)
-                                    delay(600) // Keep popup visible briefly
+                                    delay(800) // Keep popup visible briefly
                                     tapOverlayVisible = false
                                 }
                             }
@@ -680,12 +692,17 @@ fun VideoPlayerScreen(
                             }
 
                             if (tapCount >= 2) {
-                                val seekAmountSeconds = when (tapCount) {
+                                val baseSeconds = when (tapCount) {
                                     2 -> 5
                                     3 -> 10
                                     else -> 30
                                 }
-                                tapOverlayText = if (tapOnRight) "+$seekAmountSeconds seconds" else "-$seekAmountSeconds seconds"
+                                val scaledSeconds = baseSeconds * playbackSpeed
+                                val frameDurationSeconds = 1f / videoFrameRate
+                                val finalSeconds = maxOf(scaledSeconds, frameDurationSeconds)
+
+                                val text = if (finalSeconds < 1f) "${(finalSeconds * 1000).toInt()}ms" else String.format(Locale.US, "%.1fs", finalSeconds)
+                                tapOverlayText = if (tapOnRight) "+$text" else "-$text"
                                 tapOverlayVisible = true
                             }
 
@@ -696,27 +713,25 @@ fun VideoPlayerScreen(
                                 if (tapCount == 1) {
                                     showControls = !showControls
                                 } else {
-                                    val seekAmountMs = when (tapCount) {
+                                    val baseMs = when (tapCount) {
                                         2 -> 5000L
                                         3 -> 10000L
                                         else -> 30000L
                                     }
+                                    val scaledMs = (baseMs * playbackSpeed).toLong()
+                                    val frameDurationMs = (1000f / videoFrameRate).toLong()
+                                    val finalMs = maxOf(scaledMs, frameDurationMs)
                                     val direction = if (tapOverlayIsRight) 1 else -1
 
                                     playerController?.let {
-                                        val newPos = (it.currentPosition + (seekAmountMs * direction)).coerceIn(0L, duration)
+                                        val newPos = (it.currentPosition + (finalMs * direction)).coerceIn(0L, duration)
 
-                                        val fastArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_FAST) }
-                                        it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), fastArgs)
+                                        // Use EXACT mode for these scaled jumps
+                                        val exactArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_EXACT) }
+                                        it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), exactArgs)
 
                                         it.seekTo(newPos)
                                         currentPosition = newPos
-
-                                        launch {
-                                            delay(200)
-                                            val exactArgs = Bundle().apply { putInt(PlaybackService.KEY_SEEK_MODE, PlaybackService.SEEK_MODE_EXACT) }
-                                            it.sendCustomCommand(SessionCommand(PlaybackService.ACTION_SET_SEEK_PARAMETERS, Bundle.EMPTY), exactArgs)
-                                        }
                                     }
                                 }
 
