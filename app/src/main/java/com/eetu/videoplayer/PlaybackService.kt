@@ -35,7 +35,11 @@ class PlaybackService : MediaSessionService() {
         const val KEY_SEEK_MODE = "KEY_SEEK_MODE"
         const val SEEK_MODE_EXACT = 0
         const val SEEK_MODE_FAST = 1
-        const val FIVE_MINUTES_MS = 300_000
+        const val MAX_BUFFER_MS = 50_000
+        const val MIN_BUFFER_MS = 5_000
+        const val BACK_BUFFER_MS = 30_000
+        const val BUFFER_FOR_PLAYBACK_MS = 250
+        const val BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 500
     }
 
     override fun onCreate() {
@@ -59,25 +63,22 @@ class PlaybackService : MediaSessionService() {
 
 
         val loadControl = DefaultLoadControl.Builder()
-            // 1. Set the Forward Buffer (The +5 minutes)
+            // 1. Set the Forward Buffer
             .setBufferDurationsMs(
-                FIVE_MINUTES_MS, // Min buffer: Try to always keep 5 mins ahead loaded
-                FIVE_MINUTES_MS, // Max buffer: Don't load more than 5 mins ahead to save RAM
-                100,             // Min buffer to start playback (100ms for instant start)
-                100              // Min buffer to resume playback after seek
+                MIN_BUFFER_MS,
+                MAX_BUFFER_MS,
+                BUFFER_FOR_PLAYBACK_MS,
+                BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
             )
 
-            // 2. Set the Back Buffer (The -5 minutes)
-            // The second parameter 'true' is critical: it ensures the back buffer
-            // aligns specifically with keyframes.
-            .setBackBuffer(FIVE_MINUTES_MS, true)
+            // 2. Set the Back Buffer
+            .setBackBuffer(BACK_BUFFER_MS, true)
 
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
         val renderersFactory = DefaultRenderersFactory(this).apply {
             setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
-            forceEnableMediaCodecAsynchronousQueueing()
         }
 
         // 4. Build the Player
@@ -120,9 +121,9 @@ class PlaybackService : MediaSessionService() {
                     val mode = args.getInt(KEY_SEEK_MODE, SEEK_MODE_EXACT)
                     val player = session.player
                     if (player is ExoPlayer) {
-                        // Ensure we use CLOSEST_SYNC for fast scrubbing
+                        // Use PREVIOUS_SYNC for even faster scrubbing in high-res
                         player.setSeekParameters(
-                            if (mode == SEEK_MODE_FAST) SeekParameters.CLOSEST_SYNC else SeekParameters.DEFAULT
+                            if (mode == SEEK_MODE_FAST) SeekParameters.PREVIOUS_SYNC else SeekParameters.DEFAULT
                         )
                     }
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))

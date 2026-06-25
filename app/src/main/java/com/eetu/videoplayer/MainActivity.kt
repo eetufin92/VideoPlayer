@@ -1,3 +1,5 @@
+@file:OptIn(UnstableApi::class)
+
 package com.eetu.videoplayer
 
 import android.app.Activity
@@ -15,9 +17,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -30,9 +38,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -82,9 +92,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -112,14 +125,18 @@ import androidx.media3.ui.PlayerView
 import com.eetu.videoplayer.ui.theme.VideoPlayerTheme
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.pow
+import android.media.MediaMetadataRetriever
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 private val SEEK_SENSITIVITY = floatPreferencesKey("seek_sensitivity")
@@ -351,6 +368,72 @@ fun VideoPlayerScreen(
         }
     }
 
+    var thumbnails by remember { mutableStateOf<Map<Long, ImageBitmap>>(emptyMap()) }
+
+    LaunchedEffect(videoUri) {
+        if (videoUri != null) {
+            thumbnails = emptyMap()
+            withContext(Dispatchers.IO) {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(context, videoUri)
+                    val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0L
+                    if (durationMs > 0) {
+                        val newThumbnails = mutableMapOf<Long, ImageBitmap>()
+                        
+                        // Binary splitting sequence: Generate 0.5, then 0.25 & 0.75, etc.
+                        // This ensures we have broad coverage quickly.
+                        val points = mutableListOf<Double>()
+                        val queue: java.util.Queue<Pair<Double, Double>> = java.util.LinkedList()
+                        
+                        points.add(0.0)
+                        points.add(1.0)
+                        queue.add(0.0 to 1.0)
+                        
+                        while (points.size < 64 && queue.isNotEmpty()) {
+                            val (low, high) = queue.poll()!!
+                            val mid = (low + high) / 2.0
+                            if (mid !in points) {
+                                points.add(mid)
+                                queue.add(low to mid)
+                                queue.add(mid to high)
+                            }
+                        }
+
+                        for ((index, ratio) in points.withIndex()) {
+                            val timeMs = (ratio * durationMs).toLong()
+                            val bitmap = retriever.getScaledFrameAtTime(
+                                timeMs * 1000,
+                                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                160,
+                                90
+                            )
+                            bitmap?.let {
+                                newThumbnails[timeMs] = it.asImageBitmap()
+                                // Update UI frequently for the first few, then periodically
+                                if (index < 10 || index % 5 == 0) {
+                                    val currentMap = newThumbnails.toMap()
+                                    withContext(Dispatchers.Main) {
+                                        thumbnails = currentMap
+                                    }
+                                }
+                            }
+                        }
+                        withContext(Dispatchers.Main) {
+                            thumbnails = newThumbnails
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    retriever.release()
+                }
+            }
+        } else {
+            thumbnails = emptyMap()
+        }
+    }
+
     // Effect Update Task with Debounce using Custom Command
     LaunchedEffect(brightness, contrast, playerController) {
         playerController?.let { controller ->
@@ -448,14 +531,16 @@ fun VideoPlayerScreen(
                         // Let the slider handle its own touches
                         if (firstDown.isConsumed) return@awaitEachGesture
 
-                        // UX Dead Zone: Ignore bottom 25% if controls are visible
-                        val isTouchInBottomZone = firstDown.position.y > size.height * 0.75f
-                        if (showControls && isTouchInBottomZone) return@awaitEachGesture
+                        // UX Dead Zone: Ignore top and bottom areas if controls are visible to let them handle touches
+                        val isTouchInBottomZone = firstDown.position.y > size.height * 0.65f
+                        val isTouchInTopZone = firstDown.position.y < size.height * 0.20f
+                        if (showControls && (isTouchInBottomZone || isTouchInTopZone)) return@awaitEachGesture
 
                         var dragConsumed = false
                         var isLongPress = false
                         var isPinching = false
                         var isHorizontalSwipe = false
+                        var hasChildConsumed = false
                         var swipeDeltaX = 0f
 
                         val startPos = firstDown.position
@@ -464,7 +549,10 @@ fun VideoPlayerScreen(
 
                         do {
                             val event = awaitPointerEvent()
-                            if (event.changes.any { it.isConsumed }) break
+                            if (event.changes.any { it.isConsumed }) {
+                                hasChildConsumed = true
+                                break
+                            }
 
                             val changes = event.changes
                             if (changes.isNotEmpty()) lastPosition = changes.last().position
@@ -550,7 +638,7 @@ fun VideoPlayerScreen(
 
                         // --- QUICK SWIPE EXECUTION ---
                         // If it was a horizontal drag and it was relatively quick (under 500ms)
-                        if (isHorizontalSwipe && totalTime < 500) {
+                        if (!hasChildConsumed && isHorizontalSwipe && totalTime < 500) {
                             val direction = if (swipeDeltaX > 0) 1 else -1
                             val seekAmountMs = 5000L // 5 seconds
 
@@ -580,7 +668,7 @@ fun VideoPlayerScreen(
                         }
                         // --- TAP ACCUMULATOR LOGIC ---
                         // If it wasn't a drag, swipe, long press, or pinch, it's a tap!
-                        else if (!dragConsumed && !isLongPress && !isPinching && totalDistance < touchSlop && totalTime < 300) {
+                        else if (!hasChildConsumed && !dragConsumed && !isLongPress && !isPinching && totalDistance < touchSlop && totalTime < 300) {
                             val tapOnRight = startPos.x > size.width / 2
 
                             if (tapCount > 0 && tapOverlayIsRight != tapOnRight) {
@@ -663,7 +751,7 @@ fun VideoPlayerScreen(
                     AudioOnlyState(isPlaying = isPlaying)
                 }
 
-                if (isLoading) {
+                if (isLoading && !isSliderScrubbing) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(48.dp),
                         color = Color.White.copy(alpha = 0.7f)
@@ -708,6 +796,7 @@ fun VideoPlayerScreen(
                         currentPosition = currentPosition,
                         duration = duration,
                         playbackSpeed = playbackSpeed,
+                        thumbnails = thumbnails,
                         onPlayPauseToggle = {
                             playerController?.let {
                                 if (it.isPlaying) it.pause() else it.play()
@@ -1065,6 +1154,7 @@ fun PlayerControls(
     duration: Long,
     playbackSpeed: Float,
     isMuted: Boolean,
+    thumbnails: Map<Long, ImageBitmap> = emptyMap(),
     onPlayPauseToggle: () -> Unit,
     onSeek: (Long) -> Unit,
     onScrubStart: () -> Unit,
@@ -1138,6 +1228,7 @@ fun PlayerControls(
                     value = currentPosition.toFloat(),
                     onValueChange = { onSeek(it.toLong()) },
                     valueRange = 0f..duration.coerceAtLeast(0).toFloat(),
+                    thumbnails = thumbnails,
                     modifier = Modifier
                         .weight(1f)
                         .height(16.dp)
@@ -1201,6 +1292,7 @@ fun CustomSlider(
     onValueChange: (Float) -> Unit,
     valueRange: ClosedFloatingPointRange<Float>,
     modifier: Modifier = Modifier,
+    thumbnails: Map<Long, ImageBitmap> = emptyMap(),
     onScrubStart: () -> Unit = {},
     onScrubEnd: () -> Unit = {},
 ) {
@@ -1214,47 +1306,95 @@ fun CustomSlider(
         }
     }
 
-    Slider(
-        value = sliderValue,
-        onValueChange = { newValue ->
-            if (!isScrubbing) {
-                isScrubbing = true
-                onScrubStart()
-            }
+    Box(modifier = modifier, contentAlignment = Alignment.TopCenter) {
+        if (isScrubbing) {
+            Column(
+                modifier = Modifier.offset(y = (-140).dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Background Thumbnail Cache Preview
+                val nearestTime = thumbnails.keys.minByOrNull { abs(it - sliderValue.toLong()) }
+                val thumbnail = nearestTime?.let { thumbnails[it] }
 
-            val currentTime = System.currentTimeMillis()
-            if (currentTime - lastSeekTime > 100) {
-                onValueChange(newValue)
-                lastSeekTime = currentTime
+                Surface(
+                    modifier = Modifier
+                        .width(160.dp)
+                        .aspectRatio(16f / 9f),
+                    color = Color.DarkGray,
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                ) {
+                    if (thumbnail != null) {
+                        Image(
+                            bitmap = thumbnail,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Box(contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Surface(
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = RoundedCornerShape(12.dp),
+                    tonalElevation = 8.dp
+                ) {
+                    Text(
+                        text = "${formatTime(sliderValue.toLong())} / ${formatTime(valueRange.endInclusive.toLong())}",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
             }
-        },
-        onValueChangeFinished = {
-            // Force a final precise seek, bypassing throttle
-            onValueChange(sliderValue)
-            // Update lastSeekTime to prevent double seek if onValueChange logic changes
-            isScrubbing = false
-            onScrubEnd()
-        },
-        valueRange = valueRange,
-        modifier = modifier,
-        colors = SliderDefaults.colors(
-            thumbColor = MaterialTheme.colorScheme.primary,
-            activeTrackColor = MaterialTheme.colorScheme.primary,
-            inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+        }
+
+        Slider(
+            value = sliderValue,
+            onValueChange = { newValue ->
+                sliderValue = newValue
+                if (!isScrubbing) {
+                    isScrubbing = true
+                    onScrubStart()
+                }
+
+                val currentTime = System.currentTimeMillis()
+                if (currentTime - lastSeekTime > 50) { // Reduced throttle for smoother visual scrub
+                    onValueChange(newValue)
+                    lastSeekTime = currentTime
+                }
+            },
+            onValueChangeFinished = {
+                onValueChange(sliderValue)
+                isScrubbing = false
+                onScrubEnd()
+            },
+            valueRange = valueRange,
+            colors = SliderDefaults.colors(
+                thumbColor = MaterialTheme.colorScheme.primary,
+                activeTrackColor = MaterialTheme.colorScheme.primary,
+                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+            )
         )
-    )
+    }
 }
 
 @Composable
 fun AudioOnlyState(isPlaying: Boolean) {
     // Subtle pulsing animation when playing
-    val infiniteTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "audio_pulse")
+    val infiniteTransition = rememberInfiniteTransition(label = "audio_pulse")
     val scale by infiniteTransition.animateFloat(
         initialValue = 1f,
         targetValue = if (isPlaying) 1.15f else 1f,
-        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-            animation = androidx.compose.animation.core.tween(1000, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
         ),
         label = "audio_pulse_scale"
     )
