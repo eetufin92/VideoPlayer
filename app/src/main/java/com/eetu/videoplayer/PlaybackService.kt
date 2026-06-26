@@ -2,6 +2,7 @@ package com.eetu.videoplayer
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
@@ -14,6 +15,9 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.util.EventLogger
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mkv.MatroskaExtractor
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
@@ -81,11 +85,19 @@ class PlaybackService : MediaSessionService() {
             setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
         }
 
-        // 4. Build the Player
+        val extractorsFactory = DefaultExtractorsFactory()
+
+        Log.d("VideoPlayerDebug", "Building ExoPlayer with default ExtractorsFactory")
+
         val player = ExoPlayer.Builder(this, renderersFactory)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(cacheDataSourceFactory))
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(this, extractorsFactory)
+                    .setDataSourceFactory(cacheDataSourceFactory)
+            )
             .setLoadControl(loadControl)
             .build()
+
+        player.addAnalyticsListener(EventLogger("VideoPlayerDebug"))
 
         mediaSession = MediaSession.Builder(this, player)
             .setCallback(MediaSessionCallback())

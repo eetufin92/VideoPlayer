@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -113,6 +114,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
@@ -137,6 +139,13 @@ import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.pow
 import android.media.MediaMetadataRetriever
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.FFprobeKit
+import com.arthenica.ffmpegkit.ReturnCode
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.io.File
+import kotlin.coroutines.resume
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 private val SEEK_SENSITIVITY = floatPreferencesKey("seek_sensitivity")
@@ -155,7 +164,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             VideoPlayerTheme {
-                var videoUri by remember { mutableStateOf<Uri?>(intent?.data) }
+                var videoUri by remember { mutableStateOf(intent?.data) }
 
                 LaunchedEffect(Unit) {
                     if (intent?.action == Intent.ACTION_VIEW) {
@@ -238,6 +247,8 @@ fun VideoPlayerScreen(
     var currentPosition by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
     var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+    var hiddenSubtitles by remember { mutableStateOf<List<HiddenSubtitle>>(emptyList()) }
+    var extractingTrackIndex by remember { mutableStateOf<Int?>(null) }
     var brightness by remember { mutableFloatStateOf(0.0f) }
     var contrast by remember { mutableFloatStateOf(0.0f) }
     var isMuted by remember { mutableStateOf(false) }
@@ -289,16 +300,57 @@ fun VideoPlayerScreen(
             .let { prefSubLang = it }
     }
 
-    // Apply preferred languages when they change or player is ready
-    LaunchedEffect(prefAudioLang, prefSubLang, autoLoadSubtitles, playerController) {
-        playerController?.let { controller ->
-            val parameters = controller.trackSelectionParameters
-                .buildUpon()
-                .setPreferredAudioLanguage(prefAudioLang.takeIf { it.isNotBlank() })
-                .setPreferredTextLanguage(prefSubLang.takeIf { it.isNotBlank() })
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !autoLoadSubtitles)
-                .build()
-            controller.trackSelectionParameters = parameters
+    // Apply preferred languages and handle auto-loading of hidden tracks
+    LaunchedEffect(prefAudioLang, prefSubLang, autoLoadSubtitles, playerController, hiddenSubtitles) {
+        val controller = playerController ?: return@LaunchedEffect
+        
+        val parameters = controller.trackSelectionParameters
+            .buildUpon()
+            .setPreferredAudioLanguage(prefAudioLang.takeIf { it.isNotBlank() })
+            .setPreferredTextLanguage(prefSubLang.takeIf { it.isNotBlank() })
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !autoLoadSubtitles)
+            .build()
+        controller.trackSelectionParameters = parameters
+
+        // Auto-load matching hidden track if enabled and no track is active yet
+        if (autoLoadSubtitles && prefSubLang.isNotBlank() && videoUri != null && extractingTrackIndex == null) {
+            // Give ExoPlayer a moment to settle track selection
+            delay(1000) 
+            
+            val hasActiveSubtitle = controller.currentTracks.groups.any { 
+                (it.type == C.TRACK_TYPE_TEXT || it.type == C.TRACK_TYPE_IMAGE) && it.isSelected 
+            }
+
+            if (!hasActiveSubtitle) {
+                val normalizedPref = try { Locale(prefSubLang).isO3Language.lowercase() } catch (e: Exception) { prefSubLang.lowercase() }
+                
+                val match = hiddenSubtitles.find { 
+                    val normalizedHidden = try { Locale(it.language).isO3Language.lowercase() } catch (e: Exception) { it.language.lowercase() }
+                    normalizedHidden == normalizedPref || it.language.startsWith(prefSubLang, ignoreCase = true)
+                }
+                if (match != null) {
+                    extractingTrackIndex = match.index
+                    val srtUri = extractSubtitlesAsync(context, videoUri, match.index)
+                    if (srtUri != null) {
+                        val currentPos = controller.currentPosition
+                        val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(srtUri)
+                            .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                            .setLanguage(match.language)
+                            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                            .build()
+                        
+                        val newMediaItem = MediaItem.Builder()
+                            .setUri(videoUri)
+                            .setSubtitleConfigurations(listOf(subtitleConfig))
+                            .build()
+                        
+                        controller.setMediaItem(newMediaItem, currentPos)
+                        controller.prepare()
+                        controller.play()
+                    }
+                    extractingTrackIndex = null
+                }
+            }
         }
     }
 
@@ -366,6 +418,22 @@ fun VideoPlayerScreen(
                 }
 
                 override fun onTracksChanged(tracks: Tracks) {
+                    Log.d("VideoPlayerDebug", "Tracks changed. Total groups: ${tracks.groups.size}")
+                    tracks.groups.forEachIndexed { groupIndex, group ->
+                        val typeStr = when (group.type) {
+                            C.TRACK_TYPE_VIDEO -> "VIDEO"
+                            C.TRACK_TYPE_AUDIO -> "AUDIO"
+                            C.TRACK_TYPE_TEXT -> "TEXT"
+                            C.TRACK_TYPE_IMAGE -> "IMAGE"
+                            C.TRACK_TYPE_METADATA -> "METADATA"
+                            else -> "UNKNOWN (${group.type})"
+                        }
+                        Log.d("VideoPlayerDebug", "  Group $groupIndex: type=$typeStr, tracks=${group.length}")
+                        for (i in 0 until group.length) {
+                            val format = group.mediaTrackGroup.getFormat(i)
+                            Log.d("VideoPlayerDebug", "    Track $i: lang=${format.language}, label=${format.label}, mime=${format.sampleMimeType}, id=${format.id}")
+                        }
+                    }
                     currentTracks = tracks
                     hasVideoTrack = tracks.groups.any { it.type == C.TRACK_TYPE_VIDEO }
                 }
@@ -471,15 +539,51 @@ fun VideoPlayerScreen(
     // Load video
     LaunchedEffect(videoUri, playerController) {
         if (videoUri != null && playerController != null) {
-            val mediaItem = MediaItem.fromUri(videoUri)
+            isLoading = true
+            
+            // 1. Probe for hidden VTT tracks first
+            val detected = detectHiddenSubtitles(context, videoUri)
+            hiddenSubtitles = detected
+
+            // 2. Check if we should auto-extract
+            var autoSrtUri: Uri? = null
+            var autoSrtLang: String? = null
+            
+            if (autoLoadSubtitles && prefSubLang.isNotBlank()) {
+                val normalizedPref = try { Locale(prefSubLang).isO3Language.lowercase() } catch (e: Exception) { prefSubLang.lowercase() }
+                val match = detected.find { 
+                    val normalizedHidden = try { Locale(it.language).isO3Language.lowercase() } catch (e: Exception) { it.language.lowercase() }
+                    normalizedHidden == normalizedPref || it.language.startsWith(prefSubLang, ignoreCase = true)
+                }
+                
+                if (match != null) {
+                    extractingTrackIndex = match.index
+                    autoSrtUri = extractSubtitlesAsync(context, videoUri, match.index)
+                    autoSrtLang = match.language
+                    extractingTrackIndex = null
+                }
+            }
+
+            // 3. Build MediaItem
+            val mediaItemBuilder = MediaItem.Builder().setUri(videoUri)
+            if (autoSrtUri != null) {
+                val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(autoSrtUri)
+                    .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                    .setLanguage(autoSrtLang)
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                    .build()
+                mediaItemBuilder.setSubtitleConfigurations(listOf(subtitleConfig))
+            }
+
             playerController?.let {
-                it.setMediaItem(mediaItem)
+                it.setMediaItem(mediaItemBuilder.build())
                 // Reset speed to 1.0x for new files
                 playbackSpeed = 1.0f
                 it.playbackParameters = PlaybackParameters(1.0f)
                 it.prepare()
                 it.playWhenReady = true
             }
+            isLoading = false
         }
     }
 
@@ -749,8 +853,12 @@ fun VideoPlayerScreen(
                     AndroidView(
                         factory = { ctx ->
                             PlayerView(ctx).apply {
-                                player = playerController
                                 useController = false
+                            }
+                        },
+                        update = { view ->
+                            if (view.player != playerController) {
+                                view.player = playerController
                             }
                         },
                         modifier = Modifier
@@ -870,6 +978,8 @@ fun VideoPlayerScreen(
                 if (showTrackSelection && !isInPiPMode) {
                     TrackSelectionDialog(
                         tracks = currentTracks,
+                        hiddenSubtitles = hiddenSubtitles,
+                        extractingTrackIndex = extractingTrackIndex,
                         onTrackSelected = { group, trackIndex ->
                             playerController?.let { controller ->
                                 val parameters = controller.trackSelectionParameters
@@ -879,6 +989,34 @@ fun VideoPlayerScreen(
                                     )
                                     .build()
                                 controller.trackSelectionParameters = parameters
+                            }
+                        },
+                        onHiddenSubtitleSelected = { hidden ->
+                            if (playerController != null) {
+                                extractingTrackIndex = hidden.index
+                                scope.launch {
+                                    val srtUri = extractSubtitlesAsync(context, videoUri, hidden.index)
+                                    if (srtUri != null) {
+                                        val currentPos = playerController?.currentPosition ?: 0L
+                                        val subtitleConfig = MediaItem.SubtitleConfiguration.Builder(srtUri)
+                                            .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                                            .setLanguage(hidden.language)
+                                            .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                                            .build()
+                                        
+                                        val newMediaItem = MediaItem.Builder()
+                                            .setUri(videoUri)
+                                            .setSubtitleConfigurations(listOf(subtitleConfig))
+                                            .build()
+                                        
+                                        playerController?.let {
+                                            it.setMediaItem(newMediaItem, currentPos)
+                                            it.prepare()
+                                            it.play()
+                                        }
+                                    }
+                                    extractingTrackIndex = null
+                                }
                             }
                         },
                         onDisableType = { type ->
@@ -1049,7 +1187,10 @@ fun SpeedBoostOverlay() {
 @Composable
 fun TrackSelectionDialog(
     tracks: Tracks,
+    hiddenSubtitles: List<HiddenSubtitle> = emptyList(),
+    extractingTrackIndex: Int? = null,
     onTrackSelected: (Tracks.Group, Int) -> Unit,
+    onHiddenSubtitleSelected: (HiddenSubtitle) -> Unit = {},
     onDisableType: (Int) -> Unit,
     onEnableType: (Int) -> Unit,
     onDismiss: () -> Unit
@@ -1057,65 +1198,142 @@ fun TrackSelectionDialog(
     Surface(
         modifier = Modifier
             .fillMaxWidth(0.9f)
-            .height(400.dp)
+            .height(450.dp)
             .padding(16.dp),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 8.dp
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "Tracks",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Tracks",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                if (extractingTrackIndex != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Converting...", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
             Spacer(modifier = Modifier.height(8.dp))
 
             LazyColumn(modifier = Modifier.weight(1f)) {
+                // --- AUDIO SECTION ---
                 item {
                     Text(
-                        "Audio",
+                        "Audio Tracks",
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.secondary
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.padding(vertical = 8.dp)
                     )
                 }
-                val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-                items(audioGroups) { group ->
-                    for (i in 0 until group.length) {
+                
+                val audioTracks = tracks.groups
+                    .filter { it.type == C.TRACK_TYPE_AUDIO }
+                    .flatMap { group -> (0 until group.length).map { i -> group to i } }
+
+                if (audioTracks.isEmpty()) {
+                    item { Text("No audio tracks found", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp)) }
+                } else {
+                    items(audioTracks) { (group, index) ->
+                        val format = group.mediaTrackGroup.getFormat(index)
+                        val lang = format.language
+                        val displayLang = if (!lang.isNullOrBlank()) {
+                            try { Locale(lang).isO3Language.uppercase() } catch (e: Exception) { lang.uppercase() }
+                        } else null
+                        
                         TrackItem(
-                            label = group.mediaTrackGroup.getFormat(i).language ?: "Unknown",
-                            isSelected = group.isTrackSelected(i),
-                            onClick = { onTrackSelected(group, i) }
+                            label = format.label ?: displayLang ?: "Audio Track ${index + 1}",
+                            isSelected = group.isTrackSelected(index),
+                            type = C.TRACK_TYPE_AUDIO,
+                            onClick = { onTrackSelected(group, index) }
                         )
                     }
                 }
 
+                // --- SUBTITLES SECTION ---
                 item {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
                     Text(
                         "Subtitles",
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.secondary
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.padding(vertical = 8.dp)
                     )
                     TrackItem(
                         label = "None",
-                        isSelected = !tracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected },
-                        onClick = { onDisableType(C.TRACK_TYPE_TEXT) }
+                        isSelected = !tracks.groups.any { (it.type == C.TRACK_TYPE_TEXT || it.type == C.TRACK_TYPE_IMAGE) && it.isSelected },
+                        type = C.TRACK_TYPE_TEXT,
+                        onClick = { 
+                            onDisableType(C.TRACK_TYPE_TEXT)
+                            onDisableType(C.TRACK_TYPE_IMAGE)
+                        }
                     )
                 }
 
-                val subtitleGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
-                items(subtitleGroups) { group ->
-                    for (i in 0 until group.length) {
-                        TrackItem(
-                            label = group.mediaTrackGroup.getFormat(i).language ?: "Unknown",
-                            isSelected = group.isTrackSelected(i),
-                            onClick = {
-                                onEnableType(C.TRACK_TYPE_TEXT)
-                                onTrackSelected(group, i)
-                            }
-                        )
-                    }
+                val subtitleTracks = tracks.groups
+                    .filter { it.type != C.TRACK_TYPE_VIDEO && it.type != C.TRACK_TYPE_AUDIO }
+                    .flatMap { group -> (0 until group.length).map { i -> group to i } }
+
+                items(subtitleTracks) { (group, index) ->
+                    val format = group.mediaTrackGroup.getFormat(index)
+                    val lang = format.language
+                    val displayLang = if (!lang.isNullOrBlank()) {
+                        try { Locale(lang).isO3Language.uppercase() } catch (e: Exception) { lang.uppercase() }
+                    } else null
+
+                    val label = listOfNotNull(format.label, displayLang)
+                        .firstOrNull { it.isNotBlank() } ?: "Track ${index + 1} (${group.type})"
+                    
+                    TrackItem(
+                        label = label,
+                        isSelected = group.isTrackSelected(index),
+                        type = group.type,
+                        onClick = {
+                            onEnableType(group.type)
+                            onTrackSelected(group, index)
+                        }
+                    )
+                }
+
+                // --- HIDDEN VTT TRACKS ---
+                // Filter out hidden tracks that have already been extracted and added to ExoPlayer's tracks
+                val activeSubtitleLanguages = subtitleTracks.map { (group, index) -> 
+                    val lang = group.mediaTrackGroup.getFormat(index).language
+                    if (!lang.isNullOrBlank()) {
+                        try { Locale(lang).isO3Language.lowercase() } catch (e: Exception) { lang.lowercase() }
+                    } else null
+                }.filterNotNull()
+
+                val uniqueHiddenSubtitles = hiddenSubtitles.filter { hidden ->
+                    val normalizedHidden = try { Locale(hidden.language).isO3Language.lowercase() } 
+                                           catch (e: Exception) { hidden.language.lowercase() }
+                    normalizedHidden !in activeSubtitleLanguages
+                }
+
+                items(uniqueHiddenSubtitles) { hidden ->
+                    val isThisExtracting = extractingTrackIndex == hidden.index
+                    val displayLang = try { Locale(hidden.language).isO3Language.uppercase() } 
+                                      catch (e: Exception) { hidden.language.uppercase() }
+                    
+                    TrackItem(
+                        label = if (isThisExtracting) "$displayLang (Extracting...)" else displayLang,
+                        isSelected = false,
+                        type = C.TRACK_TYPE_TEXT,
+                        onClick = { if (extractingTrackIndex == null) onHiddenSubtitleSelected(hidden) }
+                    )
+                }
+
+                if (subtitleTracks.isEmpty() && uniqueHiddenSubtitles.isEmpty()) {
+                    item { Text("No subtitle tracks found", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp), color = Color.Gray) }
                 }
             }
 
@@ -1123,7 +1341,7 @@ fun TrackSelectionDialog(
                 text = "Close",
                 modifier = Modifier
                     .align(Alignment.End)
-                    .padding(top = 8.dp)
+                    .padding(top = 16.dp)
                     .clickable { onDismiss() },
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold
@@ -1133,12 +1351,12 @@ fun TrackSelectionDialog(
 }
 
 @Composable
-fun TrackItem(label: String, isSelected: Boolean, onClick: () -> Unit) {
+fun TrackItem(label: String, isSelected: Boolean, type: Int, onClick: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .padding(vertical = 4.dp),
+            .padding(vertical = 2.dp),
         color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
         shape = RoundedCornerShape(8.dp)
     ) {
@@ -1147,16 +1365,21 @@ fun TrackItem(label: String, isSelected: Boolean, onClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                imageVector = if (label == "None") Icons.AutoMirrored.Filled.VolumeOff else if (label.length > 3) Icons.Default.Subtitles else Icons.Default.Audiotrack,
+                imageVector = when {
+                    label == "None" -> Icons.AutoMirrored.Filled.VolumeOff
+                    type == C.TRACK_TYPE_AUDIO -> Icons.Default.Audiotrack
+                    else -> Icons.Default.Subtitles
+                },
                 contentDescription = null,
                 modifier = Modifier.size(20.dp),
                 tint = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.width(12.dp))
             Text(
-                text = label.uppercase(),
+                text = label,
                 style = MaterialTheme.typography.bodyLarge,
-                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1
             )
         }
     }
@@ -1858,4 +2081,48 @@ fun EmptyState() {
             )
         }
     }
+}
+
+data class HiddenSubtitle(val index: Int, val language: String, val codec: String)
+
+/**
+ * Suspends the coroutine while FFmpeg extracts and converts the subtitle track.
+ * Returns the Uri of the new .srt file, or null if it fails.
+ */
+suspend fun extractSubtitlesAsync(context: Context, videoUri: Uri, trackIndex: Int): Uri? = suspendCancellableCoroutine { continuation ->
+    val outputFile = File(context.cacheDir, "extracted_${trackIndex}_${System.currentTimeMillis()}.srt")
+    val inputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri)
+    
+    // Command: map specific subtitle track to SRT
+    val command = "-y -i \"$inputPath\" -map 0:$trackIndex \"${outputFile.absolutePath}\""
+
+    val session = FFmpegKit.executeAsync(command) { session ->
+        if (ReturnCode.isSuccess(session.returnCode)) {
+            continuation.resume(Uri.fromFile(outputFile))
+        } else {
+            Log.e("VideoPlayer", "FFmpeg Extraction Failed: ${session.failStackTrace}")
+            continuation.resume(null)
+        }
+    }
+    
+    continuation.invokeOnCancellation {
+        FFmpegKit.cancel(session.sessionId)
+    }
+}
+
+suspend fun detectHiddenSubtitles(context: Context, videoUri: Uri): List<HiddenSubtitle> = withContext(Dispatchers.IO) {
+    val inputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri)
+    val hiddenSubs = mutableListOf<HiddenSubtitle>()
+
+    val session = FFprobeKit.getMediaInformation(inputPath)
+    val info = session.mediaInformation
+
+    info?.streams?.forEach { stream ->
+        if (stream.type == "subtitle" && stream.codec == "webvtt") {
+            val lang = stream.tags?.getString("language") ?: "Unknown"
+            hiddenSubs.add(HiddenSubtitle(stream.index.toInt(), lang, stream.codec))
+        }
+    }
+    
+    hiddenSubs
 }
